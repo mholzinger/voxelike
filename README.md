@@ -105,7 +105,11 @@ three-quarter view of the way he came in: within an eighth of a turn of
 straight behind him, wherever in that the least stands in the way and the
 swing is shortest. And when he walks in behind a wall and cannot be seen
 whole, it goes to the nearest place he can be seen from. Inside a room it
-otherwise stays where it is. The D-pad keeps the camera direction it had
+otherwise stays where it is. Even then it waits its moment: while a
+direction is held and the hero is getting somewhere it does not move,
+however many doors he goes through. It moves when the pad is let go, or
+when he has walked as far as that direction will take him and stood against
+it for a moment. The D-pad keeps the camera direction it had
 when it was first pushed until it is let go, so even those swings do not
 change which way the hero is walking. Turning the camera by hand holds all
 this off for three seconds. See `follow()` in `sh_src/m_main.c`.

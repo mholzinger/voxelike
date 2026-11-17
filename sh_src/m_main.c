@@ -98,8 +98,16 @@ static int flat_wanted;
  * the least stands in the way and the swing is shortest, which is often no
  * swing at all. And when he walks in behind a wall on the camera's side
  * and cannot be seen whole, it goes to the nearest place he can be seen
- * from. Inside a room it otherwise stays exactly where it is. Turning it
- * by hand holds all this off for HANDS_OFF vblanks. */
+ * from. Inside a room it otherwise stays exactly where it is.
+ *
+ * Even then it waits its moment. While the player holds a direction and
+ * the hero is getting somewhere, the camera stays as it is, however many
+ * doors he goes through: it moves when the pad is let go, or when he has
+ * walked as far as that direction will take him (the passage turns, there
+ * is a wall) and has stood against it for STUCK vblanks. Then it looks at
+ * where he has ended up and takes its view from that. Turning it by hand
+ * holds all this off for HANDS_OFF vblanks. */
+#define STUCK         24
 #define THREE_QUARTER 0x2000
 #define HANDS_OFF     180
 #define TALL          5      /* voxels over the hero's floor that hide him */
@@ -150,10 +158,13 @@ static uint16_t best_view(uint16_t from, int reach, int step) {
 	return best_yaw;
 }
 
-/* Where the camera should swing to now, if anywhere: returns 1 and sets
- * *target. Called once a frame; it watches the hero's steps. */
-static int follow(uint16_t *target) {
-	/* Way of travel for a step of (dx, dy), as the yaw that looks along it. */
+/* Watch the hero's steps, once a frame, and note when the camera has a
+ * reason to move: he is somewhere new, or hidden. */
+enum { STAY, ENTERED, HID };
+static int reason;
+static uint16_t heading;           /* the yaw that looks along his last step */
+
+static void watch(void) {
 	static const uint16_t heading_of[3][3] = {
 		{ 0xA000, 0xC000, 0xE000 },
 		{ 0x8000, 0,      0x0000 },
@@ -165,22 +176,23 @@ static int follow(uint16_t *target) {
 
 	was_cx = vox_hero_cx;
 	was_cy = vox_hero_cy;
-	if(first || (dx == 0 && dy == 0)) return 0;
+	if(first) was_room = rogue_room_id();   /* where the game starts is not news */
+	if(first || (dx == 0 && dy == 0)) return;
 
 	int room = rogue_room_id();
 	int entered = (room != was_room);
 	was_room = room;
-	if(dx < -1 || dx > 1 || dy < -1 || dy > 1) return 0;   /* stairs, a teleport */
+	if(dx < -1 || dx > 1 || dy < -1 || dy > 1) return;   /* stairs, a teleport */
 
-	if(entered) {
-		*target = best_view(heading_of[dy + 1][dx + 1], THREE_QUARTER, 0x1000);
-		return *target != persp_yaw;
-	}
-	if(hidden_from(persp_yaw) >= HIDDEN) {
-		*target = best_view(persp_yaw, 0x8000 - 0x1000, 0x1000);
-		return *target != persp_yaw;
-	}
-	return 0;
+	heading = heading_of[dy + 1][dx + 1];
+	if(entered) reason = ENTERED;
+	else if(reason == STAY && hidden_from(persp_yaw) >= HIDDEN) reason = HID;
+}
+
+/* The view to take up for the reason noted, from where the hero is now. */
+static uint16_t view_for(int why) {
+	if(why == ENTERED) return best_view(heading, THREE_QUARTER, 0x1000);
+	return best_view(persp_yaw, 0x8000 - 0x1000, 0x1000);
 }
 
 static void camera_buttons(void) {
@@ -193,11 +205,24 @@ static void camera_buttons(void) {
 
 	if(pad & (SEGA_CTRL_X | SEGA_CTRL_Y | SEGA_CTRL_Z)) hands_at = now ? now : 1;
 	{
-		uint16_t wanted;
+		/* Getting somewhere: a direction is held and it is not long since
+		 * the hero last changed cell or was in the middle of something. */
+		static uint32_t moved_at;
+		static int at_cx, at_cy;
+		if(vox_hero_cx != at_cx || vox_hero_cy != at_cy || vox_hero_busy) moved_at = now;
+		at_cx = vox_hero_cx;
+		at_cy = vox_hero_cy;
+		int walking = (pad & (SEGA_CTRL_UP | SEGA_CTRL_DOWN | SEGA_CTRL_LEFT | SEGA_CTRL_RIGHT))
+		              && now - moved_at < STUCK;
 		int quiet = !hands_at || now - hands_at >= HANDS_OFF;
-		if(follow(&wanted) && quiet && !flat_wanted && PERSP == 1) {
-			target = wanted;
-			swinging = gently = 1;
+
+		watch();
+		if(!quiet || flat_wanted || PERSP != 1) {
+			reason = STAY;
+		} else if(reason != STAY && !walking) {
+			target = view_for(reason);
+			reason = STAY;
+			if(target != persp_yaw) swinging = gently = 1;
 		}
 	}
 
