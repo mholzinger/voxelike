@@ -148,6 +148,18 @@ static int put_wrapped(int x, int y, int w, const unsigned char *s, int len, int
 	return y;
 }
 
+#ifdef PERSP
+static char *put_number(char *p, const char *label, unsigned n) {
+	char digits[8];
+	int len = 0;
+
+	while(*label) *p++ = *label++;
+	do { digits[len++] = (char)('0' + n % 10); n /= 10; } while(n);
+	while(len) *p++ = digits[--len];
+	return p;
+}
+#endif
+
 /* Rogue wipes its message line at the next key, and with the world taking
  * turns by itself that can be a moment later. The last message is kept
  * here so it stays readable for MSG_HOLD. */
@@ -179,6 +191,19 @@ static void compose_hud(void) {
 	put_wrapped(HUD_X, MSG_ROW, HUD_W, scr, len, 1);
 	rogue_status(status);
 	text_put(HUD_X, STATUS_ROW, status, HUD_W, TEXT_WHITE, 1);
+#ifdef PERSP
+	/* A measuring build says how it is doing: frames a second, then the
+	 * mean and worst FRT ticks to draw one (3000 ticks is one vblank). */
+	{
+		extern uint16_t perf_fps, perf_mean, perf_worst;
+		char line[32], *p = line;
+		p = put_number(p, "FPS ", perf_fps);
+		p = put_number(p, "  MEAN ", perf_mean);
+		p = put_number(p, "  WORST ", perf_worst);
+		*p = 0;
+		text_put(HUD_X, STATUS_ROW - 2, line, HUD_W, TEXT_YELLOW, 1);
+	}
+#endif
 }
 
 static int row_lead(const unsigned char *row, int len) {

@@ -20,6 +20,8 @@ enum {
 };
 
 vmodel_t vox_models[M_COUNT];
+typedef char models_fit[M_COUNT <= VOX_MODELS_MAX ? 1 : -1];
+const int vox_model_count = M_COUNT;
 uint16_t vox_wtab[256];              /* CRAM index -> doubled pixel word */
 
 /* The world as last loaded, one entry per Rogue screen cell. */

@@ -52,6 +52,11 @@ static uint32_t anim_tick;       /* vblank the animation has been run up to */
  * it, so it has to be marked used to survive the link. */
 __attribute__((used)) volatile uint16_t game_render_ticks;
 
+#ifdef PERSP
+/* For the HUD of a measuring build. */
+uint16_t perf_fps, perf_mean, perf_worst;
+#endif
+
 /* Close a quarter of the distance each frame, at least one fat pixel and
  * at most four: quick to catch up, soft to settle. */
 static int ease(int from, int to) {
@@ -123,6 +128,21 @@ void game_frame(void) {
 	game_render_ticks = (uint16_t)(frt_read() - p0);
 	(void)first;
 	swapBuffers();
+
+	/* Once a second: frames shown, and the mean and worst time to draw one. */
+	static uint32_t since, sum;
+	static uint16_t frames, worst;
+	frames++;
+	sum += game_render_ticks;
+	if(game_render_ticks > worst) worst = game_render_ticks;
+	if(MARS_SYS_COMM12 - since >= 60) {
+		perf_fps = frames;
+		perf_mean = (uint16_t)(sum / frames);
+		perf_worst = worst;
+		since = MARS_SYS_COMM12;
+		frames = worst = 0;
+		sum = 0;
+	}
 	return;
 #endif
 	uint16_t t0 = frt_read();
@@ -164,7 +184,12 @@ int m_main(void) {
 	text_put(14, 10, "VOXELIKE32X", -1, TEXT_YELLOW, 0);
 	text_put(14, 14, "PRESS START", -1, TEXT_WHITE, 0);
 	text_commit();
+#ifdef BOT
+	/* Nobody is there to press it. */
+	for(uint32_t t = MARS_SYS_COMM12; MARS_SYS_COMM12 - t < 120 && !(MARS_SYS_COMM8 & SEGA_CTRL_START); );
+#else
 	while(!(MARS_SYS_COMM8 & SEGA_CTRL_START));
+#endif
 
 	rogue_start();
 	rogue_play();   /* draws and reads the pad from inside plat_getkey */

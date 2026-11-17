@@ -84,7 +84,8 @@ $(PERSPSTAMP):
 	@mkdir -p $(ROMDIR)
 	@rm -f $(ROMDIR)/.persp-*
 	@touch $@
-port/bot.o sh_src/rogue_plat.o: $(BOTSTAMP)
+port/bot.o sh_src/rogue_plat.o sh_src/m_main.o: $(BOTSTAMP)
+sh_src/rogue_plat.o: $(PERSPSTAMP)
 sh_src/m_main.o sh_src/persp.o sh_src/s_main.o: $(PERSPSTAMP)
 
 # SH2ZAM fixed-point math (vendored subset, MIT): its own dialect.

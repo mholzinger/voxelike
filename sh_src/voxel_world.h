@@ -4,7 +4,9 @@
 #include "voxel.h"
 
 /* The world as voxel.c holds it, for another renderer to read. */
+#define VOX_MODELS_MAX 32                  /* room for every terrain model */
 extern vmodel_t vox_models[];
+extern const int vox_model_count;
 extern uint8_t vox_tile[MAP_H][MAP_W];     /* index into vox_models */
 extern uint8_t vox_light[MAP_H][MAP_W];    /* top-face shade 0..7 */
 extern uint8_t vox_lift[MAP_H][MAP_W];     /* voxels of plinth under the model */

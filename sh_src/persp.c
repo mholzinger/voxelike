@@ -49,11 +49,36 @@ static uint8_t clear_run[MAP_H][MAP_W];
 #define RUN_MAX 15
 static const vmodel_t *grid[MAP_H][MAP_W];
 static uint8_t flat[MAP_H][MAP_W];         /* a cell's one height, plinth and all, or DETAIL */
+
+/* The colour on top of each column of a model, 64 bytes where the model
+ * itself spreads them over a kilobyte. */
+static uint8_t tops[VOX_MODELS_MAX][CELL * CELL];
+
+/* All a ray needs to know about a cell, in one cache line. The arrays
+ * above are where persp_sync works it out; the rays read only this. */
+typedef struct {
+    const vmodel_t *m;
+    const uint8_t *top;
+    uint8_t flat;          /* as flat[][] */
+    uint8_t light;         /* top-face shade; for an empty cell, its clear run */
+    uint8_t lift;
+    uint8_t plinth;
+    uint8_t pad[4];
+} pcell_t;
+
+typedef char pcell_is_a_line[sizeof(pcell_t) == 16 ? 1 : -1];
+static pcell_t cells[MAP_H][MAP_W];
 static vmodel_t bump[MAX_BUMPS];           /* cells with a creature standing in them */
 
 void persp_init(void) {
     for (int i = 1; i < INV_N; i++) inv_t[i] = ((uint32_t)FOCAL << (16 + 16 - INV_STEP)) / (uint32_t)i;
     inv_t[0] = inv_t[1];
+    for (int m = 0; m < vox_model_count; m++) {
+        for (int i = 0; i < CELL * CELL; i++) {
+            const vcol_t *c = &vox_models[m].col[i >> 3][i & 7];
+            tops[m][i] = c->h ? c->c[c->h - 1] : 0;
+        }
+    }
     for (int h = 0; h <= COL_MAXH; h++) {
         for (int y = 0; y < VIEW_H; y++) {
             plane_t[h][y] = (uint32_t)((EYE_H - h) * FOCAL * 4096 / (y - HORIZON));
@@ -130,6 +155,18 @@ void persp_sync(void) {
             clear_run[cy][cx] = (uint8_t)d;
         }
     }
+
+    for (int cy = 0; cy < MAP_H; cy++) {
+        for (int cx = 0; cx < MAP_W; cx++) {
+            pcell_t *pc = &cells[cy][cx];
+            pc->m = grid[cy][cx];
+            pc->top = tops[vox_tile[cy][cx]];
+            pc->flat = flat[cy][cx];
+            pc->light = flat[cy][cx] ? vox_light[cy][cx] : clear_run[cy][cx];
+            pc->lift = vox_lift[cy][cx];
+            pc->plinth = vox_plinth[vox_tile[cy][cx]];
+        }
+    }
 }
 
 /* One screen column. The ray crosses the map a cell at a time. A cell that
@@ -174,11 +211,13 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
         unsigned kind = 0, st = 0, plinth = 0;
         int lift = 0;                      /* the cell's model stands this high */
         const vmodel_t *m = 0;
+        const uint8_t *tex = 0;
         if ((unsigned)cx < MAP_W && (unsigned)cy < MAP_H) {
-            kind = flat[cy][cx];
+            const pcell_t *pc = &cells[cy][cx];
+            kind = pc->flat;
             if (kind == 0) {
                 /* Nothing here, nor for some way: cross it all at once. */
-                for (int n = clear_run[cy][cx] - 1; n > 0 && t_out < T_FAR; n--) {
+                for (int n = pc->light - 1; n > 0 && t_out < T_FAR; n--) {
                     if (x_next) { cx += sx; tcx += tdcx; }
                     else        { cy += sy; tcy += tdcy; }
                     x_next = tcx < tcy;
@@ -186,10 +225,11 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                 }
                 if (t_out > T_FAR) t_out = T_FAR;
             } else {
-                m = grid[cy][cx];
-                st = vox_light[cy][cx];
-                lift = vox_lift[cy][cx];
-                plinth = vox_plinth[vox_tile[cy][cx]];
+                m = pc->m;
+                tex = pc->top;
+                st = pc->light;
+                lift = pc->lift;
+                plinth = pc->plinth;
             }
         }
 
@@ -240,10 +280,9 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
             if (top < 0) top = 0;
             if (top < ybuf) {
                 const uint32_t *pt = &plane_t[h][ybuf - 1];
-                int layer = h - lift - 1;
                 for (int n = ybuf - top; n > 0; n--) {
                     int32_t t = (int32_t)*pt--;
-                    *dst = vox_wtab[m->col[AT_X(t) & 7][AT_Y(t) & 7].c[layer] + st];
+                    *dst = vox_wtab[tex[(AT_X(t) & 7) * CELL + (AT_Y(t) & 7)] + st];
                     dst -= VIEW_W;
                 }
                 ybuf = top;
