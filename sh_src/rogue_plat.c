@@ -14,7 +14,7 @@ extern void game_blank(void);
 int plat_screen_changed = 1;
 
 /* The player's own turns take STEP frames on screen. Left alone, the world
- * takes a turn of its own every IDLE_TURN frames, and things stroll. */
+ * takes a turn of its own every IDLE_TURN vblanks, and things stroll. */
 #define STEP          8
 #define IDLE_TURN     24
 int plat_step_frames = STEP;
@@ -169,7 +169,9 @@ static int put_wrapped(int x, int y, int w, const unsigned char *s, int len, int
 	return y;
 }
 
-#ifdef PERSP
+#define RES_SHOWN     150   /* vblanks a new resolution's name stays up */
+
+#if defined(PERSP) && defined(STATS)
 static char *put_number(char *p, const char *label, unsigned n) {
 	char digits[8];
 	int len = 0;
@@ -213,19 +215,29 @@ static void compose_hud(void) {
 	rogue_status(status);
 	text_put(HUD_X, STATUS_ROW, status, HUD_W, TEXT_WHITE, 1);
 #ifdef PERSP
-	/* A measuring build says how it is doing: frames a second, then the
-	 * mean and worst FRT ticks to draw one (3000 ticks is one vblank). */
 	{
-		static const char *const res_name[] = { " 160x112", " 320x112", " 320x224", " FOCUS" };
-		extern uint16_t perf_fps, perf_mean, perf_worst;
+		static const char *const res_name[] = { "160x112", "320x112", "320x224", "FOCUS" };
 		extern int cam_res;
+		extern uint32_t cam_res_at;
+#ifdef STATS
+		/* A measuring build says how it is doing: frames a second, then
+		 * the mean and worst FRT ticks to draw one (3000 is one vblank). */
+		extern uint16_t perf_fps, perf_mean, perf_worst;
 		char line[48], *p = line;
 		p = put_number(p, "FPS ", perf_fps);
 		p = put_number(p, " MEAN ", perf_mean);
 		p = put_number(p, " WORST ", perf_worst);
+		*p++ = ' ';
 		for(const char *r = res_name[cam_res]; *r; ) *p++ = *r++;
 		*p = 0;
 		text_put(HUD_X, STATUS_ROW - 2, line, HUD_W, TEXT_YELLOW, 1);
+		(void)cam_res_at;
+#else
+		/* The resolution names itself for a moment when it is changed. */
+		if(cam_res_at && MARS_SYS_COMM12 - cam_res_at < RES_SHOWN) {
+			text_put(HUD_X, STATUS_ROW - 2, res_name[cam_res], HUD_W, TEXT_YELLOW, 1);
+		}
+#endif
 	}
 #endif
 }
@@ -400,7 +412,7 @@ static int step_key(uint16_t pad_dir) {
 
 static int command_key(void) {
 	static uint16_t blocked;   /* held direction that goes nowhere */
-	int idle = 0;
+	uint32_t idle_since = MARS_SYS_COMM12;
 
 	rogue_idle(0);
 	plat_step_frames = STEP;
@@ -437,8 +449,10 @@ static int command_key(void) {
 			compose_hud();
 			text_commit();
 		}
-		/* Nothing from the player: the world takes a turn anyway. */
-		if(!vox_hero_busy && ++idle >= IDLE_TURN) {
+		/* Nothing from the player: the world takes a turn anyway. By the
+		 * clock, not by frames, which the two views draw at different rates. */
+		if(vox_hero_busy) idle_since = MARS_SYS_COMM12;
+		if(MARS_SYS_COMM12 - idle_since >= IDLE_TURN) {
 			rogue_idle(1);
 			plat_step_frames = IDLE_TURN;
 			return '.';
@@ -454,7 +468,7 @@ static int command_key(void) {
 			if(sel >= 0) return commands[sel].key;
 			compose_hud();
 			text_commit();
-			idle = 0;
+			idle_since = MARS_SYS_COMM12;
 		}
 	}
 }

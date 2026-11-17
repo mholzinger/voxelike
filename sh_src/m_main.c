@@ -81,6 +81,7 @@ static int cam_flat;       /* 0 full perspective .. 256 none */
 #define PERSP_RES PERSP_RES_COARSE
 #endif
 int cam_res = PERSP_RES;   /* PERSP_RES_x; make RES=n picks the one to start in */
+uint32_t cam_res_at;       /* vblank it was last changed on, 0 for never */
 static int flat_wanted;
 
 static void camera_buttons(void) {
@@ -116,6 +117,7 @@ static void camera_buttons(void) {
 	if((pad & SEGA_CTRL_MODE) && !(prev & SEGA_CTRL_MODE)) mode_since = now;
 	if(!(pad & SEGA_CTRL_MODE) && (prev & SEGA_CTRL_MODE) && now - mode_since < Y_TAP) {
 		cam_res = (cam_res + 1) % PERSP_RES_COUNT;
+		cam_res_at = now ? now : 1;
 	}
 	int pulling = (pad & SEGA_CTRL_MODE) && now - mode_since >= Y_TAP;
 	prev = pad;

@@ -1,29 +1,41 @@
 # voxelike32x
 
-Rogue, drawn as a voxel world on the Sega 32X. Fixed tilted top-down camera in
-the spirit of 3D Dot Game Heroes.
+Rogue, as a 3D voxel world on the Sega 32X, in the spirit of 3D Dot Game
+Heroes. The original game runs untouched underneath; what you see is a
+dungeon of voxels and a camera that circles the hero, pulls back, and tips
+over into a flat view and out again.
 
-Status: playable. Rogue 5.4.4 runs unmodified behind the voxel renderer, with
-its messages, status, inventory, item prompts and tombstone on screen and every
-common command reachable from the pad. The hero and all 26 monsters are voxel
-models that walk from cell to cell instead of jumping, the world takes turns
-on a clock while the player stands still, the dungeon scrolls smoothly, and
-Start begins a new game after death.
-Not done: saving, high scores and naming items.
+Status: playable, early. Rogue 5.4.4 runs unmodified behind the renderers,
+with its messages, status, inventory, item prompts and tombstone on screen
+and every common command reachable from the pad. The hero and all 26
+monsters are voxel models that walk, hop, jab and fall apart; rooms stand at
+different heights; the world takes turns on a clock while the player stands
+still; and Start begins a new game after death.
+Not done: sound, saving, high scores and naming items. Frame rates here are
+from the ares emulator, not yet from hardware.
 
 ## Build
 
 ```
 export MARSDEV=/path/to/marsdev/mars
-make            # rom/voxelike.32x
+make            # rom/voxelike.32x: the game
+make FLAT=1     # the flat view alone, without the 3D renderer
+make STATS=1    # show frames a second and the time to draw one
+make RES=3      # start in a resolution: 0 160x112, 1 320x112, 2 320x224, 3 focus
 make shot       # build, run headless in ares, write shots/latest.png
 make shot FRAMES=320 INPUT=keys.csv
 make deploy     # scp to a MiSTer (MISTER=root@host)
 ```
 
-`make shot` needs the headless ares fork (`ARES=` overrides its path).
+`make shot` needs the headless ares fork (`ARES=` overrides its path). The
+Makefile lists the rest: `PERSP=2` turns the camera by itself for measuring
+and `BOT=1` builds a ROM that plays itself.
 
-## How the renderer works
+## How the flat renderer works
+
+There are two renderers. This one draws the flat view, which the game shows
+when the camera is tipped all the way over (and which is the whole game in
+a `FLAT=1` build). The 3D one is described under "The 3D camera".
 
 - The level is Rogue's own 80x24 curses screen, held as a character grid in
   RAM. `vox_load_screen` turns each character into terrain (an 8x8 footprint
@@ -79,12 +91,10 @@ Rogue's map is flat. The renderer is not obliged to be:
 Creatures and falling pieces stand on whatever ground is under them. Both
 renderers draw the plinths.
 
-## Perspective prototype
+## The 3D camera
 
-`make PERSP=1` builds the same game with a second renderer, `sh_src/persp.c`,
-in place of the cached one: a camera with perspective that circles the hero.
-`PERSP=2` turns it by itself, for measuring. Plain `make` brings the normal
-ROM back.
+The game's main view is drawn by `sh_src/persp.c`: a camera with perspective
+that circles the hero.
 
 | Pad | Camera |
 |---|---|
@@ -110,7 +120,7 @@ the hole; a fine ray starts 32 rows below the window, drawing nothing, so
 that whatever stands that near and reaches up into the window is in place
 by the first row that shows. Over two bot-played levels in ares a frame
 took 5671 ticks at the median and 7681 at worst, between 30 and 20 frames
-a second. `make PERSP=1 RES=3` starts in it (RES is 0 to 3).
+a second. `make RES=3` starts in it (RES is 0 to 3).
 
 The flat view is the fixed renderer itself, at its 60 frames a second.
 Getting there is one continuous move: the focal length grows from 128 to
@@ -131,12 +141,12 @@ not jump. Turning the camera from the flat view tips it back out first.
 - Each cell's facts sit in one 16 byte record, a cache line, and a floor's
   colours in 64 bytes: on hardware the SH-2's 4K cache decides the speed.
 - Measured in ares over three dungeon levels played by the bot
-  (`make BOT=1 PERSP=2`): a frame takes 3519 ticks at the median and 5155 at
+  (`make BOT=1 PERSP=2 STATS=1`): a frame takes 3519 ticks at the median and 5155 at
   worst, inside the 6000 that 30 frames a second allows. One SH-2 and no
   shortcuts gave 5 frames a second; whole-cell steps 16; the second SH-2 28;
   empty runs and cheaper pixel math 30 and up. ares counts instructions and
   not memory waits, so hardware will differ.
-- For the number that counts, `make BOT=1 PERSP=2 deploy` puts a ROM on the
+- For the number that counts, `make BOT=1 PERSP=2 STATS=1 deploy` puts a ROM on the
   MiSTer that needs no pad: it starts itself, the bot plays, the camera
   turns, and a yellow line reads `FPS`, `MEAN` and `WORST` (FRT ticks to
   draw a frame; 3000 is one vblank). Not run on hardware yet.
@@ -151,7 +161,7 @@ not jump. Turning the camera from the flat view tips it back out first.
 - A creature's art may carry a back view (a third group of 8 per layer in
   `models/creatures.txt`); the hero has one. Without it the back half takes
   each layer's commonest material, so there is no face on the back.
-- Prototype limits: a creature is solid from the ground up (a gap between
+- Limits: a creature is solid from the ground up (a gap between
   legs is shadow, and fliers stand on the floor), loose voxels show through
   walls for the moment they last, and far floor shimmers. The build uses
   225K of the 256K of RAM.
@@ -191,6 +201,7 @@ The numbers are `STEP`, `IDLE_TURN`, `MORE_WAIT` and `MSG_HOLD` in
 | C | rest one turn. In a menu: choose. At a yes/no prompt: no |
 | Start | go down stairs when standing on them, otherwise pick up |
 | any button | dismiss `--More--`, a text page or the tombstone |
+| X, Y, Z, MODE | the camera: see "The 3D camera" |
 
 When Rogue asks "which object?" a list of the pack opens. When it asks for a
 direction, use the D-pad. At a yes/no prompt A is yes.

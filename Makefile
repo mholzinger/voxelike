@@ -62,31 +62,42 @@ PTCS    = $(wildcard port/*.c)
 SHOBJS += $(RGCS:.c=.o) $(PTCS:.c=.o)
 RGFLAGS = -m2 -mb -O2 -fomit-frame-pointer -ffreestanding -Iport/include -Irogue -Iport
 
-# make BOT=1 builds a ROM that plays itself, for tools/botrun.py.
-# make PERSP=1 swaps in the prototype perspective renderer (sh_src/persp.c);
-# PERSP=2 also turns the camera by itself. The stamp makes switching between
-# kinds of build recompile what differs.
+# Kinds of build. The stamps make switching between them recompile what
+# differs.
+#   make            the game: the 3D camera, with the flat view inside it
+#   make FLAT=1     the flat view alone, with no 3D renderer (sh_src/persp.c)
+#   make RES=n      start in resolution n: 0 160x112, 1 320x112, 2 320x224, 3 focus
+#   make STATS=1    show frames a second and the time to draw one
+#   make PERSP=2    turn the camera by itself, for measuring
+#   make BOT=1      a ROM that plays itself, for tools/botrun.py
+PERSP ?= 1
+ifdef FLAT
+override PERSP :=
+endif
 ifdef BOT
 RGFLAGS   += -DBOT
 SHCCFLAGS += -DBOT
 endif
-ifdef PERSP
-SHCCFLAGS += -DPERSP=$(PERSP) $(if $(RES),-DPERSP_RES=$(RES))
+ifneq ($(PERSP),)
+SHCCFLAGS += -DPERSP=$(PERSP) $(if $(RES),-DPERSP_RES=$(RES)) $(if $(STATS),-DSTATS)
 endif
 .DEFAULT_GOAL := all
 BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)
-PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)$(if $(RES),-res$(RES))
+PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)$(if $(RES),-res$(RES))$(if $(STATS),-stats)
+# A new stamp also removes the objects that depend on the kind of build:
+# made in the same second as the stamp, they would not look out of date.
+BOTOBJS   = port/bot.o sh_src/rogue_plat.o sh_src/m_main.o
+PERSPOBJS = sh_src/rogue_plat.o sh_src/m_main.o sh_src/persp.o sh_src/s_main.o
 $(BOTSTAMP):
 	@mkdir -p $(ROMDIR)
-	@rm -f $(ROMDIR)/.bot-*
+	@rm -f $(ROMDIR)/.bot-* $(BOTOBJS)
 	@touch $@
 $(PERSPSTAMP):
 	@mkdir -p $(ROMDIR)
-	@rm -f $(ROMDIR)/.persp-*
+	@rm -f $(ROMDIR)/.persp-* $(PERSPOBJS)
 	@touch $@
-port/bot.o sh_src/rogue_plat.o sh_src/m_main.o: $(BOTSTAMP)
-sh_src/rogue_plat.o: $(PERSPSTAMP)
-sh_src/m_main.o sh_src/persp.o sh_src/s_main.o: $(PERSPSTAMP)
+$(BOTOBJS): $(BOTSTAMP)
+$(PERSPOBJS): $(PERSPSTAMP)
 
 # SH2ZAM fixed-point math (vendored subset, MIT): its own dialect.
 SH2ZDIR  = third_party/SH2ZAM
