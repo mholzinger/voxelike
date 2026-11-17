@@ -23,10 +23,39 @@ static uint16_t wtab[256];                /* CRAM index -> doubled pixel word */
 
 /* The world as last loaded, one entry per Rogue screen cell. */
 static uint8_t vox_tile[MAP_H][MAP_W];    /* terrain model */
-static uint8_t vox_ent[MAP_H][MAP_W];     /* creature + 1, 0 for none */
 static uint8_t vox_light[MAP_H][MAP_W];   /* top-face shade 0..7 */
 
 int vox_hero_cx, vox_hero_cy;
+int vox_hero_x, vox_hero_y;
+int vox_hero_busy, vox_hero_jumped;
+
+/* --- Creatures --------------------------------------------------------
+ * Rogue moves a creature a whole cell at a time. Here each one has a
+ * position in voxels that walks to its cell over a few frames, with a
+ * small hop, so the grid underneath does not show. */
+#define MAX_ENTS   32
+#define HERO_ID    1u
+#define HOP_MAX    2
+#define LUNGE      12     /* frames an attack keeps the hero busy */
+#define SLIDE_MAX  2      /* cells; a longer move is a teleport, not a walk */
+
+typedef struct {
+    uint32_t id;
+    int16_t x, y;         /* top left voxel of its footprint, now */
+    int16_t tx, ty;       /* and where that is heading */
+    uint8_t kind;         /* 0 the hero, 1..26 A..Z */
+    uint8_t left, total;  /* frames of the walk left, and its length */
+    uint8_t lunge;        /* frames of a lunge left */
+    int8_t ldx, ldy;      /* which way it lunges */
+    int8_t ox, oy, z;     /* lunge offset and hop height, now */
+    uint8_t seen;
+} ent_t;
+
+static ent_t ents[MAX_ENTS];
+static int n_ents;
+
+static const int8_t hop_z[8] = { 0, 1, 2, 2, 2, 2, 1, 1 };
+static const int8_t lunge_reach[LUNGE + 1] = { 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 2 };
 
 #define LIGHT_BRIGHT  7    /* the hero's room, and right around the hero */
 #define LIGHT_NEAR    5
@@ -228,22 +257,126 @@ static int ent_for(int ch) {
     return -1;
 }
 
-/* Everything in a cell lands on its own eight screen columns, no higher
- * than the tallest thing that can stand in it and no lower than its near
- * edge. A changed cell stales exactly that patch, in both framebuffers. */
+/* Canvas rows lo..hi of world columns x0..x1 no longer show the world, in
+ * either framebuffer. */
+static void stale(int x0, int x1, int lo, int hi) {
+    if (lo < 0) lo = 0;
+    if (hi > NR - 1) hi = NR - 1;
+    for (int cx = x0 >> 3; cx <= x1 >> 3; cx++) {
+        if (cx < 0 || cx >= MAP_W) continue;
+        for (int buf = 0; buf < 2; buf++) {
+            if (lo < dirty_lo[buf][cx]) dirty_lo[buf][cx] = (uint8_t)lo;
+            if (hi > dirty_hi[buf][cx]) dirty_hi[buf][cx] = (uint8_t)hi;
+        }
+    }
+}
+
+/* The terrain of a cell lands on its own eight screen columns, no higher
+ * than the tallest column and no lower than its near edge. */
 static void stale_cell(int cx, int cy) {
     int near = cy * CELL - ROW_MIN + CELL - 1;
-    int far = near - (CELL - 1) - COL_MAXH;
-    if (far < 0) far = 0;
-    for (int buf = 0; buf < 2; buf++) {
-        if (far < dirty_lo[buf][cx]) dirty_lo[buf][cx] = (uint8_t)far;
-        if (near > dirty_hi[buf][cx]) dirty_hi[buf][cx] = (uint8_t)near;
+    stale(cx * CELL, cx * CELL + CELL - 1, near - (CELL - 1) - COL_MAXH, near);
+}
+
+/* The patch of canvas a creature covers where it stands right now. */
+static void stale_ent(const ent_t *e) {
+    int x = e->x + e->ox;
+    int r = e->y + e->oy - ROW_MIN;
+    stale(x, x + CELL - 1, r - ENT_ORIGIN - e->z, r + CELL - 1);
+}
+
+/* Rogue shows a creature at a cell. If it is one already known and the cell
+ * is close, it walks there over `frames` frames; otherwise it is simply
+ * there. */
+static void ent_place(uint32_t id, int kind, int cx, int cy, int frames) {
+    int tx = cx * CELL, ty = cy * CELL;
+    ent_t *e = 0;
+
+    for (int i = 0; i < n_ents; i++) {
+        if (ents[i].id == id) { e = &ents[i]; break; }
+    }
+    if (e) {
+        int dx = abs(tx - e->tx), dy = abs(ty - e->ty);
+        e->seen = 1;
+        if (e->kind != kind) {
+            e->kind = (uint8_t)kind;
+            stale_ent(e);
+        }
+        if (dx == 0 && dy == 0) return;
+        e->tx = (int16_t)tx;
+        e->ty = (int16_t)ty;
+        if (frames > 0 && dx <= SLIDE_MAX * CELL && dy <= SLIDE_MAX * CELL) {
+            e->left = e->total = (uint8_t)frames;
+            return;
+        }
+        stale_ent(e);
+    } else {
+        if (n_ents == MAX_ENTS) return;
+        e = &ents[n_ents++];
+        memset(e, 0, sizeof(*e));
+        e->id = id;
+        e->kind = (uint8_t)kind;
+        e->seen = 1;
+        e->tx = (int16_t)tx;
+        e->ty = (int16_t)ty;
+    }
+    e->x = e->tx;
+    e->y = e->ty;
+    e->left = 0;
+    e->z = 0;
+    stale_ent(e);
+    if (id == HERO_ID) vox_hero_jumped = 1;
+}
+
+static void hero_follow(void) {
+    for (int i = 0; i < n_ents; i++) {
+        if (ents[i].id != HERO_ID) continue;
+        vox_hero_x = ents[i].x;
+        vox_hero_y = ents[i].y;
+        vox_hero_busy = ents[i].left || ents[i].lunge;
+        return;
+    }
+    vox_hero_busy = 0;
+}
+
+void vox_animate(void) {
+    for (int i = 0; i < n_ents; i++) {
+        ent_t *e = &ents[i];
+        if (!e->left && !e->lunge) continue;
+
+        stale_ent(e);
+        if (e->left) {
+            e->x += (e->tx - e->x) / e->left;
+            e->y += (e->ty - e->y) / e->left;
+            e->left--;
+            e->z = e->left ? hop_z[(e->total - e->left) & 7] : 0;
+        }
+        if (e->lunge) {
+            e->lunge--;
+            e->ox = (int8_t)(e->ldx * lunge_reach[e->lunge]);
+            e->oy = (int8_t)(e->ldy * lunge_reach[e->lunge]);
+        }
+        stale_ent(e);
+    }
+    hero_follow();
+}
+
+void vox_hero_lunge(int dx, int dy) {
+    for (int i = 0; i < n_ents; i++) {
+        if (ents[i].id != HERO_ID) continue;
+        ents[i].lunge = LUNGE;
+        ents[i].ldx = (int8_t)dx;
+        ents[i].ldy = (int8_t)dy;
+        vox_hero_busy = 1;
     }
 }
 
 /* Row 0 of Rogue's screen is its message line and the last row its status
  * line; neither is dungeon. */
-void vox_load_screen(const uint8_t *cells, vox_under_fn under, const int *room) {
+void vox_load_screen(const uint8_t *cells, vox_under_fn under, vox_who_fn who,
+                     const int *room, int frames) {
+    for (int i = 0; i < n_ents; i++) ents[i].seen = 0;
+
     for (int i = MAP_W; i < (MAP_H - 1) * MAP_W; i++) {
         if ((cells[i] & 0x7F) == '@') {
             vox_hero_cx = i % MAP_W;
@@ -268,15 +401,28 @@ void vox_load_screen(const uint8_t *cells, vox_under_fn under, const int *room) 
                 else if (d == 2) light = LIGHT_NEAR;
             }
 
-            if (tile != vox_tile[cy][cx] || ent + 1 != vox_ent[cy][cx] ||
-                light != vox_light[cy][cx]) {
+            if (tile != vox_tile[cy][cx] || light != vox_light[cy][cx]) {
                 vox_tile[cy][cx] = tile;
-                vox_ent[cy][cx] = (uint8_t)(ent + 1);
                 vox_light[cy][cx] = light;
                 stale_cell(cx, cy);
             }
+
+            if (ent >= 0) {
+                /* A letter nobody answers for is known by where it is. */
+                uint32_t id = ent == 0 ? HERO_ID : who(cx, cy);
+                if (id == 0) id = 0x80000000u | (uint32_t)(cy * MAP_W + cx);
+                ent_place(id, ent, cx, cy, frames);
+            }
         }
     }
+
+    /* Whatever Rogue no longer shows is gone. */
+    for (int i = 0; i < n_ents; ) {
+        if (ents[i].seen) { i++; continue; }
+        stale_ent(&ents[i]);
+        ents[i] = ents[--n_ents];
+    }
+    hero_follow();
 }
 
 void vox_palette(int on) {
@@ -311,6 +457,7 @@ void vox_init(void) {
     } while (0)
 
 #define MAX_COL_ENTS 8   /* creatures one screen column can pass through */
+#define ENT_REACH    (ENT_ORIGIN + HOP_MAX)
 
 /* Draw canvas rows ra..rb of world column X into a framebuffer's tape.
  *
@@ -320,17 +467,34 @@ void vox_init(void) {
  * walk starts no nearer than the tallest column that could still reach
  * row rb, and stops once row ra is covered.
  *
- * Creatures have gaps, so they cannot join that walk. Each one met on the
- * way is noted with the limit at that moment, which is precisely what the
- * terrain in front of it hides, and stamped afterwards, farthest first. */
+ * Creatures have gaps, so they cannot join that walk. The ones standing in
+ * this column are sorted nearest first, each is given the limit at the
+ * moment the walk passes its near edge, which is precisely what the terrain
+ * in front of it hides, and they are stamped afterwards, farthest first. */
 __attribute__((section(".ramtext"), noinline))
 static void render_column(uint16_t *tape, int X, int ra, int rb) {
     struct {
         const uint8_t *rows;
-        int16_t r0, clip;
+        int16_t near, row0, clip;
         uint8_t st, sf;
-    } ents[MAX_COL_ENTS];
-    int n_ents = 0;
+    } in[MAX_COL_ENTS];
+    int n_in = 0, noted = 0;
+
+    for (int i = 0; i < n_ents && n_in < MAX_COL_ENTS; i++) {
+        const ent_t *e = &ents[i];
+        int ex = e->x + e->ox, ey = e->y + e->oy;
+        if ((unsigned)(X - ex) >= CELL) continue;
+        if (ey - ROW_MIN - ENT_REACH > rb || ey - ROW_MIN + CELL - 1 < ra) continue;
+
+        int k = n_in++;
+        for (; k > 0 && in[k - 1].near < ey + CELL - 1; k--) in[k] = in[k - 1];
+        unsigned st = vox_light[(ey + CELL / 2) >> 3][(ex + CELL / 2) >> 3];
+        in[k].rows = ent_sprite[e->kind][X - ex];
+        in[k].near = (int16_t)(ey + CELL - 1);
+        in[k].row0 = (int16_t)(ey - ROW_MIN - ENT_ORIGIN - e->z);
+        in[k].st = (uint8_t)st;
+        in[k].sf = front_shade[st];
+    }
 
     int cx = X >> 3, lx = X & 7;
     int r = rb + COL_MAXH;                /* canvas row of ground level at vy */
@@ -340,22 +504,21 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
     int32_t a = rb * STRIDE + X;
     if (a >= TAPE) a -= TAPE;
 
+    /* Nothing the walk will meet stands in front of these. */
+    while (noted < n_in && in[noted].near > vy) in[noted++].clip = (int16_t)limit;
+    int next = noted < n_in ? in[noted].near : -1;
+
     while (limit > ra && vy >= 0) {
         int cy = vy >> 3;
         const vcol_t *col = &models[vox_tile[cy][cx]].col[lx][vy & 7];
         unsigned st = vox_light[cy][cx];
         unsigned sf = front_shade[st];
 
-        if (vox_ent[cy][cx] && n_ents < MAX_COL_ENTS) {
-            ents[n_ents].rows = ent_sprite[vox_ent[cy][cx] - 1][lx];
-            ents[n_ents].r0 = (int16_t)(cy * CELL - ROW_MIN);
-            ents[n_ents].clip = (int16_t)limit;
-            ents[n_ents].st = (uint8_t)st;
-            ents[n_ents].sf = (uint8_t)sf;
-            n_ents++;
-        }
-
         do {
+            while (vy == next) {
+                in[noted++].clip = (int16_t)limit;
+                next = noted < n_in ? in[noted].near : -1;
+            }
             int h = col->h;
             int top = r - h;
             if (top < limit) {
@@ -372,13 +535,13 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
     }
     while (limit-- > ra) PUT(0);
 
-    while (n_ents-- > 0) {
-        const uint8_t *rows = ents[n_ents].rows;
-        int row = ents[n_ents].r0 - ENT_ORIGIN;
+    while (noted-- > 0) {
+        const uint8_t *rows = in[noted].rows;
+        int row = in[noted].row0;
         for (int k = 0; k < ENT_ROWS; k++, row++) {
             unsigned v = rows[k];
-            if (!v || row < 0 || row >= ents[n_ents].clip) continue;
-            uint16_t w = wtab[(v & ~7u) + ((v & 1) ? ents[n_ents].st : ents[n_ents].sf)];
+            if (!v || row < ra || row >= in[noted].clip) continue;
+            uint16_t w = wtab[(v & ~7u) + ((v & 1) ? in[noted].st : in[noted].sf)];
             a = row * STRIDE + X;
             if (a >= TAPE) a -= TAPE;
             tape[a] = w;

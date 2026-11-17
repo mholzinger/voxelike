@@ -1,5 +1,5 @@
-#ifndef TEXT_H
-#define TEXT_H
+#ifndef TEXT_LAYER_H
+#define TEXT_LAYER_H
 
 #include <stdint.h>
 

@@ -6,7 +6,9 @@ the spirit of 3D Dot Game Heroes.
 Status: playable. Rogue 5.4.4 runs unmodified behind the voxel renderer, with
 its messages, status, inventory, item prompts and tombstone on screen and every
 common command reachable from the pad. The hero and all 26 monsters are voxel
-models, the dungeon scrolls smoothly, and Start begins a new game after death.
+models that walk from cell to cell instead of jumping, the world takes turns
+on a clock while the player stands still, the dungeon scrolls smoothly, and
+Start begins a new game after death.
 Not done: saving, high scores and naming items.
 
 ## Build
@@ -34,6 +36,10 @@ make deploy     # scp to a MiSTer (MISTER=root@host)
 - Because the camera never turns, a creature always lands on the same pixels.
   Creatures are baked into column sprites and stamped after the terrain, each
   clipped by whatever terrain stands in front of it.
+- Rogue only knows cells. The renderer keeps a voxel position for every
+  creature (told apart by Rogue's own monster pointer) and walks it to its
+  cell with a small hop: 8 frames for a turn the player took, 24 for one the
+  world took by itself. The camera follows the hero's in-between position.
 - Each framebuffer keeps a rendered strip of the world: every row, and 312
   columns that slide along the framebuffer like a tape. Moving the camera is a
   line table rewrite plus the few columns that came into view. A change in the
@@ -56,11 +62,22 @@ tools/bake_models.py --preview shots/creatures.png
 
 draws every creature with the renderer's projection, no ROM needed.
 
+## Time
+
+Rogue is still turn based inside, and its source is still untouched. Left
+alone for 24 frames, the port hands Rogue a rest command so monsters keep
+moving; the command menu, prompts and text pages stop the clock. Those idle
+turns run with the hunger daemon switched off, so thinking costs no food.
+A `--More--` in the dungeon moves on by itself after a second, and the last
+message stays up for a second and a half even though Rogue has wiped it.
+The numbers are `STEP`, `IDLE_TURN`, `MORE_WAIT` and `MSG_HOLD` in
+`sh_src/rogue_plat.c`.
+
 ## Controls
 
 | Pad | Rogue |
 |---|---|
-| D-pad, 8 directions | move, attack by walking into a monster |
+| D-pad, 8 directions | move, hold to keep walking. Attack by walking into a monster |
 | A | command menu: inventory, eat, quaff, read, wield, wear, rings, zap, throw, drop, climb, discoveries, quit |
 | B | search. In a menu or prompt: back out |
 | C | rest one turn. In a menu: choose. At a yes/no prompt: no |

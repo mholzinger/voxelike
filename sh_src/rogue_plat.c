@@ -13,6 +13,12 @@ extern void game_blank(void);
 
 int plat_screen_changed = 1;
 
+/* The player's own turns take STEP frames on screen. Left alone, the world
+ * takes a turn of its own every IDLE_TURN frames, and things stroll. */
+#define STEP          8
+#define IDLE_TURN     24
+int plat_step_frames = STEP;
+
 #define DIR_MASK      (SEGA_CTRL_UP | SEGA_CTRL_DOWN | SEGA_CTRL_LEFT | SEGA_CTRL_RIGHT)
 #define BUTTON_MASK   (SEGA_CTRL_A | SEGA_CTRL_B | SEGA_CTRL_C | SEGA_CTRL_START)
 #define ESCAPE        27
@@ -22,6 +28,8 @@ int plat_screen_changed = 1;
 #define SETTLE        3
 #define REPEAT_FIRST  16
 #define REPEAT_NEXT   6
+#define MORE_WAIT     60    /* a --More-- in the dungeon moves on by itself */
+#define MSG_HOLD      90    /* a message stays up at least this long */
 
 /* The dungeon HUD keeps a one column margin; pages use the full width. */
 #define HUD_X         1
@@ -39,14 +47,15 @@ unsigned long plat_ticks(void) {
 typedef struct {
 	uint16_t pressed;   /* buttons that went down this step */
 	uint16_t dir;       /* direction that fired this step, with auto-repeat */
+	uint16_t held;      /* direction held steady for SETTLE, for walking */
 } input_t;
 
 static uint16_t prev_pad = 0xFFFF;   /* nothing counts as newly pressed at first */
 
 static input_t poll(void (*frame)(void)) {
-	static uint32_t dir_due, last_fire;
-	static uint16_t last_dir;
-	input_t in = { 0, 0 };
+	static uint32_t dir_due, last_fire, held_since;
+	static uint16_t last_dir, last_held;
+	input_t in = { 0, 0, 0 };
 
 	frame();
 
@@ -55,6 +64,12 @@ static input_t poll(void (*frame)(void)) {
 	uint16_t dir = pad & DIR_MASK;
 	in.pressed = pad & ~prev_pad;
 	prev_pad = pad;
+
+	if(dir != last_held) {
+		last_held = dir;
+		held_since = now;
+	}
+	if(now - held_since >= SETTLE) in.held = dir;
 
 	if(in.pressed & DIR_MASK) dir_due = now + SETTLE;
 	if(dir && (int32_t)(now - dir_due) >= 0) {
@@ -68,9 +83,12 @@ static input_t poll(void (*frame)(void)) {
 	return in;
 }
 
-static void wait_any(void (*frame)(void)) {
+/* Wait for any press, or for `frames` vblanks if that is not 0. */
+static void wait_any(void (*frame)(void), int frames) {
+	uint32_t start = MARS_SYS_COMM12;
 	for(;;) {
 		if(poll(frame).pressed & (DIR_MASK | BUTTON_MASK)) return;
+		if(frames && MARS_SYS_COMM12 - start >= (uint32_t)frames) return;
 	}
 }
 
@@ -124,13 +142,35 @@ static int put_wrapped(int x, int y, int w, const unsigned char *s, int len, int
 	return y;
 }
 
+/* Rogue wipes its message line at the next key, and with the world taking
+ * turns by itself that can be a moment later. The last message is kept
+ * here so it stays readable for MSG_HOLD. */
+static unsigned char held_msg[MAP_W];
+static int held_len;
+static uint32_t held_at;
+static int hud_holding;   /* the HUD is showing a message Rogue has wiped */
+
 /* Rogue's message line and a compact status line, over the dungeon. */
 static void compose_hud(void) {
 	const unsigned char *scr = rogue_screen();
+	int len = row_len(scr, MAP_W);
 	char status[96];
 
+	hud_holding = 0;
+	if(len > 0) {
+		for(int i = 0; i < len; i++) held_msg[i] = scr[i];
+		held_len = len;
+		held_at = MARS_SYS_COMM12;
+	} else if(held_len && MARS_SYS_COMM12 - held_at < MSG_HOLD) {
+		scr = held_msg;
+		len = held_len;
+		hud_holding = 1;
+	} else {
+		held_len = 0;
+	}
+
 	text_begin();
-	put_wrapped(HUD_X, MSG_ROW, HUD_W, scr, row_len(scr, MAP_W), 1);
+	put_wrapped(HUD_X, MSG_ROW, HUD_W, scr, len, 1);
 	rogue_status(status);
 	text_put(HUD_X, STATUS_ROW, status, HUD_W, TEXT_WHITE, 1);
 }
@@ -254,7 +294,7 @@ static int prompt_key(void) {
 	int len = row_len(scr, MAP_W);
 
 	if(contains(scr, len, "--More--")) {
-		wait_any(game_frame);
+		wait_any(game_frame, MORE_WAIT);
 		return ' ';
 	}
 	if(contains(scr, len, "for list")) return pick_item();
@@ -269,11 +309,55 @@ static int prompt_key(void) {
 	}
 }
 
-static int command_key(void) {
-	for(;;) {
-		input_t in = poll(game_frame);
+static uint16_t step_dir;        /* the last key was a step this way... */
+static int step_cx, step_cy;     /* ...from this cell */
 
-		if(in.dir) return dir_key(in.dir);
+/* The hero is about to step one cell. If a monster is in the way the step
+ * is a blow, and the hero jabs at it. */
+static int step_key(uint16_t dir) {
+	int dx = ((dir & SEGA_CTRL_RIGHT) != 0) - ((dir & SEGA_CTRL_LEFT) != 0);
+	int dy = ((dir & SEGA_CTRL_DOWN) != 0) - ((dir & SEGA_CTRL_UP) != 0);
+
+	step_dir = dir;
+	step_cx = vox_hero_cx;
+	step_cy = vox_hero_cy;
+	if(rogue_who(vox_hero_cx + dx, vox_hero_cy + dy)) {
+		vox_hero_lunge(dx, dy);
+		step_dir = 0;
+	}
+	return dir_key(dir);
+}
+
+static int command_key(void) {
+	static uint16_t blocked;   /* held direction that goes nowhere */
+	int idle = 0;
+
+	rogue_idle(0);
+	plat_step_frames = STEP;
+	for(;;) {
+		input_t in = poll(game_frame);   /* which also takes in Rogue's screen */
+
+		/* A step that left the hero where he was cost no turn. Trying it
+		 * again every frame would stop the clock; wait for the world to
+		 * move on, or for the player to try something else. */
+		if(step_dir) {
+			blocked = (step_cx == vox_hero_cx && step_cy == vox_hero_cy) ? step_dir : 0;
+			step_dir = 0;
+		}
+		if(in.held != blocked) blocked = 0;
+
+		/* One step per walk across a cell: a held direction keeps walking. */
+		if(in.held && !blocked && !vox_hero_busy && dir_key(in.held)) return step_key(in.held);
+		if(hud_holding && MARS_SYS_COMM12 - held_at >= MSG_HOLD) {
+			compose_hud();
+			text_commit();
+		}
+		/* Nothing from the player: the world takes a turn anyway. */
+		if(!vox_hero_busy && ++idle >= IDLE_TURN) {
+			rogue_idle(1);
+			plat_step_frames = IDLE_TURN;
+			return '.';
+		}
 		if(in.pressed & SEGA_CTRL_B) return 's';      /* search */
 		if(in.pressed & SEGA_CTRL_C) return '.';      /* rest a turn */
 		if(in.pressed & SEGA_CTRL_START) {
@@ -285,6 +369,7 @@ static int command_key(void) {
 			if(sel >= 0) return commands[sel].key;
 			compose_hud();
 			text_commit();
+			idle = 0;
 		}
 	}
 }
@@ -300,13 +385,13 @@ int plat_getkey(void) {
 	if(page_cells) {
 		show_page(page_cells, page_lines, page_cols);
 		page_cells = 0;
-		wait_any(game_blank);
+		wait_any(game_blank, 0);
 		return ' ';
 	}
 	/* The tombstone is drawn on the main screen and wants a return. */
 	if(contains(last, MAP_W, "[Press return")) {
 		show_page(scr, MAP_H, MAP_W);
-		wait_any(game_blank);
+		wait_any(game_blank, 0);
 		return '\n';
 	}
 

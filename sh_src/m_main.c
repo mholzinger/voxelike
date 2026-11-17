@@ -38,11 +38,13 @@ static int clamp(int v, int lo, int hi) {
 }
 
 extern int plat_screen_changed;
+extern int plat_step_frames;
 
 static int cam_x, cam_y;         /* where the camera is */
 static int shown_x, shown_y;     /* where the framebuffer on screen has it */
 static int cam_snap = 1;
 static int blanked;
+static uint32_t anim_tick;       /* vblank the animation has been run up to */
 
 /* Time spent bringing the last frame's framebuffer up to date, in FRT
  * ticks, for a debugger or a RAM dump to read. Nothing in the game reads
@@ -66,23 +68,36 @@ void game_frame(void) {
 	if(plat_screen_changed) {
 		int room[4];
 		plat_screen_changed = 0;
-		vox_load_screen(rogue_screen(), rogue_under, rogue_room(room) ? room : 0);
+		vox_load_screen(rogue_screen(), rogue_under, rogue_who,
+		                rogue_room(room) ? room : 0, plat_step_frames);
 	}
 	if(blanked) {
 		vox_palette(1);
 		blanked = 0;
+		anim_tick = MARS_SYS_COMM12;
+	}
+	/* Stairs or a teleport: be there, do not pan across the level. */
+	if(vox_hero_jumped) {
+		vox_hero_jumped = 0;
+		cam_snap = 1;
 	}
 
-	int tx = clamp(vox_hero_cx * CELL + CELL / 2 - VIEW_W / 2, CAM_X_MIN, CAM_X_MAX);
-	int ty = clamp(vox_hero_cy * CELL + CELL / 2 - VIEW_H / 2 - 4, CAM_Y_MIN, CAM_Y_MAX);
+	/* Things move by the clock, so a slow frame does not slow the game. */
+	int steps = clamp((int)(MARS_SYS_COMM12 - anim_tick), 1, 3);
+	anim_tick = MARS_SYS_COMM12;
 	int first = cam_snap;
-	if(cam_snap) {
-		cam_x = tx;
-		cam_y = ty;
-		cam_snap = 0;
+	while(steps-- > 0) {
+		vox_animate();
+		int tx = clamp(vox_hero_x + CELL / 2 - VIEW_W / 2, CAM_X_MIN, CAM_X_MAX);
+		int ty = clamp(vox_hero_y + CELL / 2 - VIEW_H / 2 - 4, CAM_Y_MIN, CAM_Y_MAX);
+		if(cam_snap) {
+			cam_x = tx;
+			cam_y = ty;
+			cam_snap = 0;
+		}
+		cam_x = ease(cam_x, tx);
+		cam_y = ease(cam_y, ty);
 	}
-	cam_x = ease(cam_x, tx);
-	cam_y = ease(cam_y, ty);
 
 	uint16_t t0 = frt_read();
 	int drawn = vox_prepare((uint16_t *)&MARS_FRAMEBUFFER, currentFB, cam_x, cam_y);

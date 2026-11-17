@@ -34,16 +34,31 @@ typedef struct {
 } vmodel_t;
 
 extern int vox_hero_cx, vox_hero_cy;   /* where the last screen load found '@' */
+extern int vox_hero_x, vox_hero_y;     /* top left voxel of the hero right now */
+extern int vox_hero_busy;              /* the hero is still walking or lunging */
+extern int vox_hero_jumped;            /* set when the hero moved without walking */
 
 /* The level's own character at a cell, whatever stands on it. */
 typedef int (*vox_under_fn)(int cx, int cy);
+
+/* Who the creature shown at a cell is: the same nonzero number for as long
+ * as it lives, or 0 if nobody is really there. Never 1. */
+typedef uint32_t (*vox_who_fn)(int cx, int cy);
 
 void vox_init(void);
 
 /* Rebuild the world from Rogue's screen. room is the lit room the hero is
  * in as { x0, y0, x1, y1 } in cells, or NULL in a passage or a dark room.
- * Only cells that changed are redrawn afterwards. */
-void vox_load_screen(const uint8_t *cells, vox_under_fn under, const int *room);
+ * A creature that moved walks to its new cell over `frames` frames. Only
+ * what changed is redrawn afterwards. */
+void vox_load_screen(const uint8_t *cells, vox_under_fn under, vox_who_fn who,
+                     const int *room, int frames);
+
+/* Move every walking creature on by one frame. */
+void vox_animate(void);
+
+/* Have the hero jab toward a neighbouring cell and come back. */
+void vox_hero_lunge(int dx, int dy);
 
 /* Bring the framebuffer that is about to be shown up to date for a camera
  * position and point its line table there. buf names which of the two

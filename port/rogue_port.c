@@ -236,6 +236,37 @@ rogue_under(int x, int y)
 }
 
 /*
+ * rogue_who:
+ *	A number that stays with the monster at a screen cell for as long
+ *	as it lives, so the renderer can tell a monster that moved from a
+ *	different one. 0 if no monster is there.
+ */
+unsigned long
+rogue_who(int x, int y)
+{
+    if (x < 0 || x >= NUMCOLS || y < 1 || y >= NUMLINES - 1)
+	return 0;
+    return (unsigned long) moat(y, x);
+}
+
+/*
+ * rogue_idle:
+ *	The world moves on while the player stands and thinks. Those
+ *	turns should not starve him, so the stomach is stopped for them.
+ */
+void
+rogue_idle(int on)
+{
+    static int idle = FALSE;
+
+    if (on && !idle)
+	kill_daemon(stomach);
+    else if (!on && idle)
+	start_daemon(stomach, 0, AFTER);
+    idle = on;
+}
+
+/*
  * rogue_cursor_row:
  *	Row the cursor was left on. Row 0 means Rogue is waiting for the
  *	answer to a prompt, anything else means it wants a command.
