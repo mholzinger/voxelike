@@ -1,0 +1,5 @@
+*.o
+*.d
+rom/
+shots/
+.DS_Store
