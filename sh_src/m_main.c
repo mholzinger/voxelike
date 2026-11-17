@@ -3,6 +3,7 @@
 #include "text.h"
 #include "persp.h"
 #include "sfx.h"
+#include "sh2zam/sh2zam.h"
 #include "../port/plat.h"
 
 uint32_t lastTick = 0;
@@ -64,6 +65,7 @@ uint16_t perf_fps, perf_mean, perf_worst;
  *   Y tapped        swing behind the hero, so up on the pad is the way he faces
  *   Y tapped twice  swing back to north
  *   Y held          tip the view over into the flat one, or back out of it
+ *   (nothing)       it follows the hero by itself: see follow()
  *   MODE held       pull back to show more, for as long as it is held
  *   MODE tapped     next picture resolution: 160x112, 320x112, 320x224, and
  *                   fine around the hero with the rest coarse
@@ -72,7 +74,8 @@ uint16_t perf_fps, perf_mean, perf_worst;
  * Turning the camera from the flat view tips it back first. */
 #define Y_TAP      15      /* vblanks: a press shorter than this is a tap */
 #define Y_AGAIN    30      /* vblanks: a second tap this soon makes it a double */
-#define SWING      0x500   /* turn per frame when the camera moves by itself */
+#define SWING      0x500   /* turn per frame when a button swings the camera */
+#define SWING_GENTLY 0x240 /* and at most this when it is following */
 #define TIP        8       /* of 256 per frame: tipping over takes half a second */
 #define NORTH      0xC000
 
@@ -85,13 +88,121 @@ int cam_res = PERSP_RES;   /* PERSP_RES_x; make RES=n picks the one to start in 
 uint32_t cam_res_at;       /* vblank it was last changed on, 0 for never */
 static int flat_wanted;
 
+/* The camera that follows by itself.
+ *
+ * It does not chase the hero's every turn. A view from within an eighth of
+ * a turn of straight behind him, a three-quarter view, shows where he is
+ * going well enough, so while it has one it stays put. When he sets off
+ * another way and keeps to it for FOLLOW_AFTER steps, it swings only as far
+ * as the nearest three-quarter view. If he is still going that way at
+ * SETTLE_AFTER steps, and every SETTLE_AGAIN after, it looks for the best
+ * place to watch from and goes there: wherever the least stands between
+ * the eye and the hero and what is beside him, and of those the nearest.
+ * It does not wait that long if he walks in behind a wall.
+ * A fight, where he stands and swings, moves nothing. Turning the camera
+ * by hand holds all this off for HANDS_OFF vblanks. */
+#define FOLLOW_AFTER  2
+#define SETTLE_AFTER  5
+#define SETTLE_AGAIN  4
+#define THREE_QUARTER 0x2000
+#define HANDS_OFF     180
+#define TALL          5      /* voxels over the hero's floor that hide him */
+
+/* How much stands in the way of seeing the hero from the direction yaw
+ * looks along: the cells beside him on the eye's side, and one farther. */
+static int hidden_from(uint16_t yaw) {
+	static const int16_t around[] = { 0, 0x1800, -0x1800 };
+	int floor = vox_height_at(vox_hero_cx, vox_hero_cy) - 1;
+	int hx = vox_hero_cx * CELL + CELL / 2, hy = vox_hero_cy * CELL + CELL / 2;
+	int score = 0;
+
+	for(unsigned i = 0; i < sizeof(around) / sizeof(around[0]); i++) {
+		sh2z_fx_t s, c;
+		sh2z_sincos((uint16_t)(yaw + around[i]), &s, &c);
+		/* Towards the eye is backwards along the view. */
+		int x = hx - ((c * 10) >> 16), y = hy - ((s * 10) >> 16);
+		if(vox_height_at(x >> 3, y >> 3) - floor >= TALL) score += i ? 2 : 3;
+		if(i == 0) {
+			x = hx - ((c * 18) >> 16);
+			y = hy - ((s * 18) >> 16);
+			if(vox_height_at(x >> 3, y >> 3) - floor >= 2 * TALL) score += 2;
+		}
+	}
+	return score;
+}
+
+/* Where the camera should swing to now, if anywhere: returns 1 and sets
+ * *target. Called once a frame; it watches the hero's steps. */
+static int follow(uint16_t *target) {
+	/* Way of travel for a step of (dx, dy), as the yaw that looks along it. */
+	static const uint16_t heading_of[3][3] = {
+		{ 0xA000, 0xC000, 0xE000 },
+		{ 0x8000, 0,      0x0000 },
+		{ 0x6000, 0x4000, 0x2000 },
+	};
+	static int was_cx = -1, was_cy, steady;
+	static uint16_t heading;
+	int dx = vox_hero_cx - was_cx, dy = vox_hero_cy - was_cy;
+	int first = was_cx < 0;
+
+	was_cx = vox_hero_cx;
+	was_cy = vox_hero_cy;
+	if(first || (dx == 0 && dy == 0)) return 0;
+	if(dx < -1 || dx > 1 || dy < -1 || dy > 1) {      /* stairs, a teleport */
+		steady = 0;
+		return 0;
+	}
+
+	uint16_t h = heading_of[dy + 1][dx + 1];
+	steady = (steady && h == heading) ? steady + 1 : 1;
+	heading = h;
+
+	if(steady == FOLLOW_AFTER) {
+		int16_t off = (int16_t)(persp_yaw - heading);
+		if(off >= -THREE_QUARTER && off <= THREE_QUARTER) return 0;
+		*target = (uint16_t)(heading + (off > 0 ? THREE_QUARTER : -THREE_QUARTER));
+		return 1;
+	}
+	/* Time to choose a place to watch from: he has kept on long enough, or
+	 * he has walked in behind something. */
+	int due = steady >= SETTLE_AFTER && (steady - SETTLE_AFTER) % SETTLE_AGAIN == 0;
+	if(due || (steady > FOLLOW_AFTER && hidden_from(persp_yaw) >= 3)) {
+		static const int16_t offsets[] = { 0, 0x1000, -0x1000, 0x2000, -0x2000 };
+		int best = 0x7FFF;
+
+		for(unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+			uint16_t yaw = (uint16_t)(heading + offsets[i]);
+			int16_t swing = (int16_t)(yaw - persp_yaw);
+			if(swing < 0) swing = (int16_t)-swing;
+			/* Being hidden counts for far more than having to move. */
+			int score = hidden_from(yaw) * 64 + (swing >> 9);
+			if(score < best) {
+				best = score;
+				*target = yaw;
+			}
+		}
+		return *target != persp_yaw;
+	}
+	return 0;
+}
+
 static void camera_buttons(void) {
 	static const uint16_t behind[4] = { 0x4000, 0x8000, NORTH, 0x0000 };
 	static uint16_t prev, target;
-	static uint32_t y_since, tapped_at, mode_since;
-	static int swinging, tapped, tipped;
+	static uint32_t y_since, tapped_at, mode_since, hands_at;
+	static int swinging, tapped, tipped, gently;
 	uint16_t pad = MARS_SYS_COMM8;
 	uint32_t now = MARS_SYS_COMM12;
+
+	if(pad & (SEGA_CTRL_X | SEGA_CTRL_Y | SEGA_CTRL_Z)) hands_at = now ? now : 1;
+	{
+		uint16_t wanted;
+		int quiet = !hands_at || now - hands_at >= HANDS_OFF;
+		if(follow(&wanted) && quiet && !flat_wanted && PERSP == 1) {
+			target = wanted;
+			swinging = gently = 1;
+		}
+	}
 
 	if(pad & (SEGA_CTRL_X | SEGA_CTRL_Z)) {
 		swinging = 0;
@@ -107,6 +218,7 @@ static void camera_buttons(void) {
 	if(!(pad & SEGA_CTRL_Y) && (prev & SEGA_CTRL_Y) && now - y_since < Y_TAP) {
 		target = (tapped && now - tapped_at < Y_AGAIN) ? NORTH : behind[vox_hero_face & 3];
 		swinging = 1;
+		gently = 0;
 		tapped = 1;
 		tapped_at = now;
 		if(target != NORTH) flat_wanted = 0;
@@ -127,11 +239,18 @@ static void camera_buttons(void) {
 	if(flat_wanted && persp_yaw != NORTH) {
 		target = NORTH;
 		swinging = 1;
+		gently = 0;
 	}
 	if(swinging) {
 		int16_t d = (int16_t)(target - persp_yaw);   /* the short way round */
-		if(d > SWING) d = SWING;
-		if(d < -SWING) d = -SWING;
+		int most = SWING;
+		if(gently) {
+			/* Following: ease in to rest, never fast. */
+			most = (d < 0 ? -d : d) / 8;
+			most = clamp(most, 0x60, SWING_GENTLY);
+		}
+		if(d > most) d = (int16_t)most;
+		if(d < -most) d = (int16_t)-most;
 		persp_yaw += d;
 		if(persp_yaw == target) swinging = 0;
 	}

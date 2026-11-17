@@ -97,6 +97,16 @@ renderers draw the plinths.
 The game's main view is drawn by `sh_src/persp.c`: a camera with perspective
 that circles the hero.
 
+The camera follows by itself, and lazily. While it has a three-quarter view
+of where the hero is going (within an eighth of a turn of straight behind
+him) it stays put. When he sets off another way and keeps to it for two
+steps, it swings only as far as the nearest three-quarter view. If he keeps
+on, or walks in behind a wall, it picks the best place to watch from: where
+the least stands between the eye and the hero, and of those the nearest. A
+fight moves nothing, and turning the camera by hand holds the following off
+for three seconds. The numbers are at the top of `follow()` in
+`sh_src/m_main.c`.
+
 | Pad | Camera |
 |---|---|
 | X, Z | swing left and right around the hero |

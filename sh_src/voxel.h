@@ -86,6 +86,9 @@ void vox_hero_lunge(int dx, int dy);
  * framebuffers fb is. Returns how many visible columns had to be drawn. */
 int vox_prepare(uint16_t *fb, int buf, int cam_x, int cam_y);
 
+/* How high whatever stands in a cell reaches, in voxels: 0 for nothing. */
+int vox_height_at(int cx, int cy);
+
 /* Something else drew on the framebuffers: nothing in them can be kept. */
 void vox_forget(void);
 

@@ -669,6 +669,13 @@ void vox_palette(int on) {
     }
 }
 
+static uint8_t model_height[M_COUNT];      /* tallest column of each model */
+
+int vox_height_at(int cx, int cy) {
+    if ((unsigned)cx >= MAP_W || (unsigned)cy >= MAP_H || vox_tile[cy][cx] == M_VOID) return 0;
+    return vox_lift[cy][cx] + model_height[vox_tile[cy][cx]];
+}
+
 void vox_forget(void) {
     memset(slot_owner, 0xFF, sizeof(slot_owner));
 }
@@ -679,6 +686,15 @@ void vox_init(void) {
     memset(slot_owner, 0xFF, sizeof(slot_owner));
     memset(dirty_lo, 0xFF, sizeof(dirty_lo));
     build_models();
+    for (int m = 0; m < M_COUNT; m++) {
+        for (int lx = 0; lx < CELL; lx++) {
+            for (int ly = 0; ly < CELL; ly++) {
+                if (vox_models[m].col[lx][ly].h > model_height[m]) {
+                    model_height[m] = vox_models[m].col[lx][ly].h;
+                }
+            }
+        }
+    }
 }
 
 /* Write one fat pixel at tape position a and step a up one canvas row. */
