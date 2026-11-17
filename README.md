@@ -102,6 +102,13 @@ and its status line is rebuilt in a compact form from the same variables.
   screen from emulated RAM. Use it to tell a game bug from a render bug.
 - `tools/frametimes.py --frames N --input keys.csv` reports render time per
   frame in FRT ticks (5.56 us each; a 60 fps frame has about 3000).
+- `make BOT=1 && tools/botrun.py --frames 36000` plays the game with no
+  pad. The bot (`port/bot.c`, test builds only) collects what lies on each
+  level, tries it, fights what stands next to it and takes the stairs; it
+  cannot die or starve. The tool saves screenshots and contact sheets to
+  `shots/bot/` and prints the level reached over time, frame times and the
+  final screen. Ten emulated minutes take about five and reach level 19.
+  Run plain `make` afterwards to get the playable ROM back.
 - Input scripts are `frame,button,value` lines. Boot takes about 2 seconds, so
   press Start no earlier than frame 150.
 

@@ -52,6 +52,14 @@ char *strchr(const char *s, int c) {
     }
 }
 
+char *strstr(const char *s, const char *word) {
+    size_t n = strlen(word);
+    for (; *s; s++) {
+        if (strncmp(s, word, n) == 0) return (char *)s;
+    }
+    return n ? NULL : (char *)s;
+}
+
 void *memset(void *d, int c, size_t n) {
     unsigned char *p = d;
     while (n--) *p++ = (unsigned char)c;

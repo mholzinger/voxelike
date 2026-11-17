@@ -10,6 +10,7 @@ char  *strcat(char *d, const char *s);
 int    strcmp(const char *a, const char *b);
 int    strncmp(const char *a, const char *b, size_t n);
 char  *strchr(const char *s, int c);
+char  *strstr(const char *s, const char *word);
 void  *memset(void *d, int c, size_t n);
 void  *memcpy(void *d, const void *s, size_t n);
 

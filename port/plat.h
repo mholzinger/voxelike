@@ -16,6 +16,10 @@ void rogue_play(void);
 const unsigned char *rogue_screen(void);   /* the 80x24 screen's cells */
 int  rogue_under(int x, int y);            /* level character at a screen cell */
 unsigned long rogue_who(int x, int y);     /* the monster at a screen cell, or 0 */
+#ifdef BOT
+int  rogue_bot_key(void);                  /* test builds: the next command, 0 to stand */
+int  rogue_bot_answer(void);               /* test builds: the answer to a prompt */
+#endif
 void rogue_idle(int on);                   /* turns that pass by themselves cost no food */
 int  rogue_room(int *bounds);              /* lit room the player is in, as x0 y0 x1 y1 */
 int  rogue_cursor_row(void);               /* 0 while Rogue waits on a prompt */

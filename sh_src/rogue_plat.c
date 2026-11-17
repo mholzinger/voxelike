@@ -28,7 +28,13 @@ int plat_step_frames = STEP;
 #define SETTLE        3
 #define REPEAT_FIRST  16
 #define REPEAT_NEXT   6
+#ifdef BOT
+#define MORE_WAIT     10
+#define PAGE_WAIT     30    /* the test bot reads fast */
+#else
 #define MORE_WAIT     60    /* a --More-- in the dungeon moves on by itself */
+#define PAGE_WAIT     0     /* a text page waits for the player */
+#endif
 #define MSG_HOLD      90    /* a message stays up at least this long */
 
 /* The dungeon HUD keeps a one column margin; pages use the full width. */
@@ -293,10 +299,24 @@ static int prompt_key(void) {
 	const unsigned char *scr = rogue_screen();
 	int len = row_len(scr, MAP_W);
 
+	/* An identify scroll for one kind of thing keeps asking until it gets
+	 * that kind. With none in the pack the only way out is Rogue's own
+	 * list, which notices there is nothing to choose and lets go. */
+	static int refused;
+
 	if(contains(scr, len, "--More--")) {
+		if(contains(scr, len, "must identify")) refused = 1;
 		wait_any(game_frame, MORE_WAIT);
 		return ' ';
 	}
+	if(refused && contains(scr, len, "for list")) {
+		refused = 0;
+		return '*';
+	}
+#ifdef BOT
+	for(int i = 0; i < STEP; i++) poll(game_frame);
+	return rogue_bot_answer();
+#endif
 	if(contains(scr, len, "for list")) return pick_item();
 
 	/* A direction, or a yes or no: A is yes, C is no, B backs out. */
@@ -334,6 +354,21 @@ static int command_key(void) {
 
 	rogue_idle(0);
 	plat_step_frames = STEP;
+#ifdef BOT
+	int key = rogue_bot_key();
+	if(key) {
+		static const char keys[] = "hjklyubn";
+		static const int8_t kdx[] = { -1, 0, 0, 1, -1, 1, -1, 1 };
+		static const int8_t kdy[] = { 0, 1, -1, 0, -1, -1, 1, 1 };
+
+		for(int i = 0; i < STEP || vox_hero_busy; i++) poll(game_frame);
+		for(int i = 0; i < 8; i++) {
+			if(keys[i] == key && rogue_who(vox_hero_cx + kdx[i], vox_hero_cy + kdy[i]))
+				vox_hero_lunge(kdx[i], kdy[i]);
+		}
+		return key;
+	}
+#endif
 	for(;;) {
 		input_t in = poll(game_frame);   /* which also takes in Rogue's screen */
 
@@ -385,13 +420,13 @@ int plat_getkey(void) {
 	if(page_cells) {
 		show_page(page_cells, page_lines, page_cols);
 		page_cells = 0;
-		wait_any(game_blank, 0);
+		wait_any(game_blank, PAGE_WAIT);
 		return ' ';
 	}
 	/* The tombstone is drawn on the main screen and wants a return. */
 	if(contains(last, MAP_W, "[Press return")) {
 		show_page(scr, MAP_H, MAP_W);
-		wait_any(game_blank, 0);
+		wait_any(game_blank, PAGE_WAIT);
 		return '\n';
 	}
 
@@ -438,7 +473,11 @@ void plat_exit(int status) {
 	text_put(16, 12, "THE END", -1, TEXT_YELLOW, 0);
 	text_put(8, 14, "PRESS START TO PLAY AGAIN", -1, TEXT_WHITE, 0);
 	text_commit();
+#ifdef BOT
+	wait_any(game_blank, 120);
+#else
 	while(!(poll(game_blank).pressed & SEGA_CTRL_START));
+#endif
 
 	text_begin();
 	text_commit();
