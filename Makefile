@@ -71,11 +71,11 @@ RGFLAGS   += -DBOT
 SHCCFLAGS += -DBOT
 endif
 ifdef PERSP
-SHCCFLAGS += -DPERSP=$(PERSP)
+SHCCFLAGS += -DPERSP=$(PERSP) $(if $(RES),-DPERSP_RES=$(RES))
 endif
 .DEFAULT_GOAL := all
 BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)
-PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)
+PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)$(if $(RES),-res$(RES))
 $(BOTSTAMP):
 	@mkdir -p $(ROMDIR)
 	@rm -f $(ROMDIR)/.bot-*

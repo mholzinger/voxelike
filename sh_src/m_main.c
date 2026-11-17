@@ -64,7 +64,8 @@ uint16_t perf_fps, perf_mean, perf_worst;
  *   Y tapped twice  swing back to north
  *   Y held          tip the view over into the flat one, or back out of it
  *   MODE held       pull back to show more, for as long as it is held
- *   MODE tapped     next picture resolution: 160x112, 320x112, 320x224
+ *   MODE tapped     next picture resolution: 160x112, 320x112, 320x224, and
+ *                   fine around the hero with the rest coarse
  * The flat view is the fixed renderer's own, at its full frame rate; the
  * perspective one flattens until the two pictures meet and then hands over.
  * Turning the camera from the flat view tips it back first. */
@@ -76,7 +77,10 @@ uint16_t perf_fps, perf_mean, perf_worst;
 
 static int cam_pull;       /* 0 close in .. 256 pulled back */
 static int cam_flat;       /* 0 full perspective .. 256 none */
-int cam_res;               /* PERSP_RES_x */
+#ifndef PERSP_RES
+#define PERSP_RES PERSP_RES_COARSE
+#endif
+int cam_res = PERSP_RES;   /* PERSP_RES_x; make RES=n picks the one to start in */
 static int flat_wanted;
 
 static void camera_buttons(void) {

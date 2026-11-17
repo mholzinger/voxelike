@@ -216,7 +216,7 @@ static void compose_hud(void) {
 	/* A measuring build says how it is doing: frames a second, then the
 	 * mean and worst FRT ticks to draw one (3000 ticks is one vblank). */
 	{
-		static const char *const res_name[] = { " 160x112", " 320x112", " 320x224" };
+		static const char *const res_name[] = { " 160x112", " 320x112", " 320x224", " FOCUS" };
 		extern uint16_t perf_fps, perf_mean, perf_worst;
 		extern int cam_res;
 		char line[48], *p = line;

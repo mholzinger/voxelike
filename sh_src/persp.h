@@ -10,6 +10,7 @@ enum {
     PERSP_RES_COARSE,      /* 160x112: every pixel worked out stands for 2x2 */
     PERSP_RES_WIDE,        /* 320x112: for 1x2 */
     PERSP_RES_FINE,        /* 320x224: for itself */
+    PERSP_RES_FOCUS,       /* fine around the hero, coarse everywhere else */
     PERSP_RES_COUNT
 };
 

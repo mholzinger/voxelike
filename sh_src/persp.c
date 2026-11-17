@@ -61,6 +61,7 @@ static struct {
     sh2z_fx_t s, c;
     int32_t focal, horizon;
     int32_t eye_h, t_near, t_far;
+    int32_t t_focus;       /* depth of the ground on the row a focus ray starts from */
     int res;               /* PERSP_RES_x: how finely the picture is drawn */
     int cols, rows;
 } job;
@@ -257,30 +258,76 @@ void persp_creatures(void) {
 /* WIDE and YS are constants where this is used, so each resolution gets a
  * copy of its own with nothing left to decide per pixel: WIDE for columns
  * two pixels wide, YS 1 for rows one scanline tall. */
-#define PIXEL(w) do {                                          \
-        if (WIDE) *(pair_t *)dst = (uint16_t)(w);              \
-        else      *dst = (uint8_t)(w);                         \
-        dst -= STRIDE;                                         \
+/* The focus window: the middle of the screen, where the hero and what is
+ * next to him always are, drawn fine while the rest is drawn coarse. In
+ * scanlines and screen pixels. A fine ray for it starts FOCUS_RUNUP rows
+ * below, so that whatever stands that near and reaches up into the window
+ * is in place before the first row that shows. */
+#define FOCUS_X0     128
+#define FOCUS_X1     192
+#define FOCUS_Y0     56
+#define FOCUS_Y1     150
+#define FOCUS_RUNUP  32
+#define FOCUS_START  (FOCUS_Y1 + FOCUS_RUNUP)
+
+/* How a ray's pixels reach the framebuffer, all constants where used:
+ *   WIDE    a pixel is two screen pixels wide, written as one word
+ *   YS      1 when a row is one scanline, 0 when it is two
+ *   TWICE   in the rows the focus window is on, the two scanlines of a row
+ *           are two rows of the framebuffer and both are written; elsewhere,
+ *           and always without TWICE, the line table shows one row twice
+ *   CLIP    CLIP_HOLE leaves the focus window's rows alone, CLIP_FOCUS
+ *           draws only them
+ * y is the row the next pixel goes on, counted in this ray's own rows. */
+enum { CLIP_NONE, CLIP_HOLE, CLIP_FOCUS };
+
+#define PIXEL(w) do {                                                        \
+        if (CLIP == CLIP_NONE ||                                             \
+            (CLIP == CLIP_HOLE ? (unsigned)(y - FOCUS_Y0 / 2) >= (FOCUS_Y1 - FOCUS_Y0) / 2 \
+                               : y < FOCUS_Y1)) {                            \
+            if (WIDE) {                                                      \
+                *(pair_t *)dst = (uint16_t)(w);                              \
+                if (TWICE && (unsigned)(y - FOCUS_Y0 / 2) < (FOCUS_Y1 - FOCUS_Y0) / 2) \
+                    *(pair_t *)(dst + STRIDE) = (uint16_t)(w);               \
+            } else {                                                         \
+                *dst = (uint8_t)(w);                                         \
+            }                                                                \
+        }                                                                    \
+        dst -= TWICE ? 2 * STRIDE : STRIDE;                                  \
+        y--;                                                                 \
+    } while (0)
+
+/* A run of rows that would all be clipped is stepped over, not worked out. */
+#define HIDDEN(top) ((CLIP == CLIP_FOCUS && (top) >= FOCUS_Y1) ||                          \
+                     (CLIP == CLIP_HOLE && ybuf <= FOCUS_Y1 / 2 && (top) >= FOCUS_Y0 / 2))
+#define PASS(top) do {                                                 \
+        dst -= (ybuf - (top)) * (TWICE ? 2 * STRIDE : STRIDE);         \
+        y -= ybuf - (top);                                             \
     } while (0)
 
 static inline __attribute__((always_inline))
 void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
-         int32_t tdx, int32_t tdy, const int WIDE, const int YS) {
+         int32_t tdx, int32_t tdy, const int WIDE, const int YS,
+         const int TWICE, const int CLIP) {
     const int32_t EYE_H = job.eye_h, T_NEAR = job.t_near, T_FAR = job.t_far;
-    const int32_t HORIZON = job.horizon;
+    const int32_t HORIZON = job.horizon << YS;
+    /* A focus ray draws rows YEND up to FOCUS_START and starts as deep as
+     * the ground is on the row it starts from; any other draws them all. */
+    const int YEND = CLIP == CLIP_FOCUS ? FOCUS_Y0 : 0;
+    const int32_t T_BEGIN = CLIP == CLIP_FOCUS ? job.t_focus : T_NEAR;
 #define INV(t)  inv_t[((t) - T_NEAR) >> INV_STEP]
 #define RISE(t) rise_t[((t) - T_NEAR) >> INV_STEP]
     int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
-    int32_t px = ex + (int32_t)(((int64_t)dx * T_NEAR) >> 16);
-    int32_t py = ey + (int32_t)(((int64_t)dy * T_NEAR) >> 16);
+    int32_t px = ex + (int32_t)(((int64_t)dx * T_BEGIN) >> 16);
+    int32_t py = ey + (int32_t)(((int64_t)dy * T_BEGIN) >> 16);
     int cx = px >> 19, cy = py >> 19;
 
     /* Depth at the next cell line on each axis, and between cell lines. */
     int32_t fx = px & 0x7FFFF, fy = py & 0x7FFFF;
     int32_t tcx = tdx >= NEVER ? NEVER
-        : T_NEAR + (int32_t)(((int64_t)(dx < 0 ? fx : 0x80000 - fx) * tdx) >> 16);
+        : T_BEGIN + (int32_t)(((int64_t)(dx < 0 ? fx : 0x80000 - fx) * tdx) >> 16);
     int32_t tcy = tdy >= NEVER ? NEVER
-        : T_NEAR + (int32_t)(((int64_t)(dy < 0 ? fy : 0x80000 - fy) * tdy) >> 16);
+        : T_BEGIN + (int32_t)(((int64_t)(dy < 0 ? fy : 0x80000 - fy) * tdy) >> 16);
     int32_t tdcx = tdx >= NEVER / 8 ? NEVER : tdx * 8;
     int32_t tdcy = tdy >= NEVER / 8 ? NEVER : tdy * 8;
 
@@ -291,8 +338,9 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
 #define AT_X(t12) ((int)(((int64_t)dx20 * (int32_t)(t12) + ex48) >> 32))
 #define AT_Y(t12) ((int)(((int64_t)dy20 * (int32_t)(t12) + ey48) >> 32))
 
-    int32_t t_in = T_NEAR;
-    int ybuf = VIEW_H << YS;               /* rows at and below this are drawn */
+    int32_t t_in = T_BEGIN;
+    int ybuf = CLIP == CLIP_FOCUS ? FOCUS_START : VIEW_H << YS;   /* rows from here down are drawn */
+    int y = ybuf - 1;
     int prev_h = 0, x_side = 0;
 
     for (;;) {
@@ -328,13 +376,14 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
         if (kind == 0) {
             uint32_t s = INV(t_out);
             int top = HORIZON + (int)(((uint32_t)EYE_H * s) >> (16 - YS));
-            if (top < 0) top = 0;
+            if (top < YEND) top = YEND;
             if (top < ybuf) {
-                for (int n = ybuf - top; n > 0; n--) {
+                if (HIDDEN(top)) PASS(top);
+                else for (int n = ybuf - top; n > 0; n--) {
                     PIXEL(BLACK);
                 }
                 ybuf = top;
-                if (ybuf == 0) return;
+                if (ybuf == YEND) return;
             }
             prev_h = 0;
         } else if (kind != DETAIL) {
@@ -344,7 +393,7 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
             if (h > prev_h) {
                 uint32_t s = INV(t_in);
                 int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
-                if (top < 0) top = 0;
+                if (top < YEND) top = YEND;
                 if (top < ybuf) {
                     int32_t tq = (t_in >> 4) + 1;
                     const uint8_t *c = m->col[AT_X(tq) & 7][AT_Y(tq) & 7].c;
@@ -352,7 +401,8 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                     if (x_side && sf) sf--;
                     int32_t zstep = (int32_t)RISE(t_in) >> YS;
                     int32_t z = (EYE_H << 16) - (ybuf - 1 - HORIZON) * zstep;
-                    for (int n = ybuf - top; n > 0; n--) {
+                    if (HIDDEN(top)) PASS(top);
+                    else for (int n = ybuf - top; n > 0; n--) {
                         int zi = z >> 16;
                         if (zi < 0) zi = 0;
                         if (zi >= h) zi = h - 1;
@@ -360,23 +410,25 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                         z += zstep;
                     }
                     ybuf = top;
-                    if (ybuf == 0) return;
+                    if (ybuf == YEND) return;
                 }
             }
 
             /* The top, each row worked back to the voxel under it. */
             uint32_t s = INV(t_out);
             int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
-            if (top < 0) top = 0;
+            if (top < YEND) top = YEND;
             if (top < ybuf) {
-                const uint32_t *pt = &row_t[ybuf - 1];
+                const uint32_t *pt = &row_t[(ybuf - 1) << (1 - YS)];
                 int32_t below = EYE_H - h;
-                for (int n = ybuf - top; n > 0; n--) {
-                    int32_t t = (int32_t)(((uint64_t)*pt-- * (uint32_t)below) >> 16);
+                if (HIDDEN(top)) PASS(top);
+                else for (int n = ybuf - top; n > 0; n--) {
+                    int32_t t = (int32_t)(((uint64_t)*pt * (uint32_t)below) >> 16);
+                    pt -= 2 >> YS;
                     PIXEL(vox_wtab[tex[(AT_X(t) & 7) * CELL + (AT_Y(t) & 7)] + st]);
                 }
                 ybuf = top;
-                if (ybuf == 0) return;
+                if (ybuf == YEND) return;
             }
             prev_h = h;
         } else {
@@ -402,12 +454,13 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                 if (h > prev_h) {
                     uint32_t s = INV(tv_in);
                     int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
-                    if (top < 0) top = 0;
+                    if (top < YEND) top = YEND;
                     if (top < ybuf) {
                         unsigned sf = (x_side && sf0) ? sf0 - 1 : sf0;
                         int32_t zstep = (int32_t)RISE(tv_in) >> YS;
                         int32_t z = (EYE_H << 16) - (ybuf - 1 - HORIZON) * zstep;
-                        for (int n = ybuf - top; n > 0; n--) {
+                        if (HIDDEN(top)) PASS(top);
+                        else for (int n = ybuf - top; n > 0; n--) {
                             int zi = z >> 16;
                             if (zi < 0) zi = 0;
                             if (zi >= h) zi = h - 1;
@@ -415,7 +468,7 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                             z += zstep;
                         }
                         ybuf = top;
-                        if (ybuf == 0) return;
+                        if (ybuf == YEND) return;
                     }
                 }
 
@@ -426,15 +479,16 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                 {
                     uint32_t s = INV(tv_out);
                     int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
-                    if (top < 0) top = 0;
+                    if (top < YEND) top = YEND;
                     if (top < ybuf) {
                         uint16_t w = col->h ? vox_wtab[col->c[col->h - 1] + st]
                                             : (h ? vox_wtab[plinth + st] : BLACK);
-                        for (int n = ybuf - top; n > 0; n--) {
+                        if (HIDDEN(top)) PASS(top);
+                        else for (int n = ybuf - top; n > 0; n--) {
                             PIXEL(w);
                         }
                         ybuf = top;
-                        if (ybuf == 0) return;
+                        if (ybuf == YEND) return;
                     }
                 }
                 prev_h = h;
@@ -454,46 +508,82 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
         x_side = x_next;
         t_in = t_out;
     }
-    while (ybuf-- > 0) {
+    while (ybuf-- > YEND) {
         PIXEL(BLACK);
     }
 }
 
 
-#define RAY(name, wide, ys)                                                        \
+#define RAY(name, wide, ys, twice, clip)                                           \
     __attribute__((section(".ramtext"), noinline))                                 \
     static void name(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy, \
                      int32_t tdx, int32_t tdy) {                                   \
-        ray(dst, ex, ey, dx, dy, tdx, tdy, wide, ys);                              \
+        ray(dst, ex, ey, dx, dy, tdx, tdy, wide, ys, twice, clip);                 \
     }
-RAY(ray_coarse, 1, 0)
-RAY(ray_wide, 0, 0)
-RAY(ray_fine, 0, 1)
+RAY(ray_coarse, 1, 0, 0, CLIP_NONE)
+RAY(ray_wide, 0, 0, 0, CLIP_NONE)
+RAY(ray_fine, 0, 1, 0, CLIP_NONE)
+RAY(ray_around, 1, 0, 1, CLIP_NONE)        /* coarse, beside the focus window */
+RAY(ray_hole, 1, 0, 1, CLIP_HOLE)          /* coarse, above and below it */
+RAY(ray_focus, 0, 1, 0, CLIP_FOCUS)        /* fine, in it */
 
 #define SECONDARY_GO  1
 
-static void columns(int first) {
-    uint8_t *bottom = (uint8_t *)(job.fb + FB_PIXELS) + (job.rows - 1) * STRIDE;
-    int32_t ex = job.ex, ey = job.ey;
+typedef void ray_fn(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
+                    int32_t tdx, int32_t tdy);
+
+/* Send the ray for column col of `cols` across the screen. */
+static void cast(ray_fn *fn, uint8_t *dst, int col, int cols) {
     sh2z_fx_t s = job.s, c = job.c;
-    int res = job.res, cols = job.cols;
-    int32_t across = job.focal * (cols / VIEW_W);   /* focal length in columns */
+    sh2z_fx_t k = ((2 * col - (cols - 1)) << 16) / (2 * job.focal * (cols / VIEW_W));
+    sh2z_fx_t dx = c - sh2z_mul(s, k);
+    sh2z_fx_t dy = s + sh2z_mul(c, k);
 
-    for (int col = first; col < cols; col += 2) {
-        sh2z_fx_t k = ((2 * col - (cols - 1)) << 16) / (2 * across);
-        sh2z_fx_t dx = c - sh2z_mul(s, k);
-        sh2z_fx_t dy = s + sh2z_mul(c, k);
+    /* Depth between voxel lines on each axis. A ray that runs along an
+     * axis, or nearly, never meets the other axis's lines on screen. */
+    sh2z_fx_t tdx = dx ? sh2z_recip(sh2z_abs(dx)) : NEVER;
+    sh2z_fx_t tdy = dy ? sh2z_recip(sh2z_abs(dy)) : NEVER;
+    if (tdx > 0x1000000) tdx = NEVER;
+    if (tdy > 0x1000000) tdy = NEVER;
 
-        /* Depth between voxel lines on each axis. A ray that runs along an
-         * axis, or nearly, never meets the other axis's lines on screen. */
-        sh2z_fx_t tdx = dx ? sh2z_recip(sh2z_abs(dx)) : NEVER;
-        sh2z_fx_t tdy = dy ? sh2z_recip(sh2z_abs(dy)) : NEVER;
-        if (tdx > 0x1000000) tdx = NEVER;
-        if (tdy > 0x1000000) tdy = NEVER;
+    fn(dst, job.ex, job.ey, dx, dy, tdx, tdy);
+}
 
-        if (res == PERSP_RES_COARSE)    ray_coarse(bottom + col * 2, ex, ey, dx, dy, tdx, tdy);
-        else if (res == PERSP_RES_WIDE) ray_wide(bottom + col, ex, ey, dx, dy, tdx, tdy);
-        else                            ray_fine(bottom + col, ex, ey, dx, dy, tdx, tdy);
+/* This CPU's share of the frame: every other column, starting at `first`. */
+static void columns(int first) {
+    uint8_t *pixels = (uint8_t *)(job.fb + FB_PIXELS);
+
+    switch (job.res) {
+    case PERSP_RES_COARSE:
+        for (int col = first; col < VIEW_W; col += 2) {
+            cast(ray_coarse, pixels + (VIEW_H - 1) * STRIDE + col * 2, col, VIEW_W);
+        }
+        break;
+    case PERSP_RES_WIDE:
+        for (int col = first; col < 2 * VIEW_W; col += 2) {
+            cast(ray_wide, pixels + (VIEW_H - 1) * STRIDE + col, col, 2 * VIEW_W);
+        }
+        break;
+    case PERSP_RES_FINE:
+        for (int col = first; col < 2 * VIEW_W; col += 2) {
+            cast(ray_fine, pixels + (2 * VIEW_H - 1) * STRIDE + col, col, 2 * VIEW_W);
+        }
+        break;
+    default:
+        /* Coarse columns, each two framebuffer rows to a row. One that
+         * crosses the focus window leaves a hole for its two fine columns. */
+        for (int col = first; col < VIEW_W; col += 2) {
+            uint8_t *at = pixels + (2 * VIEW_H - 2) * STRIDE + col * 2;
+            if (col < FOCUS_X0 / 2 || col >= FOCUS_X1 / 2) {
+                cast(ray_around, at, col, VIEW_W);
+                continue;
+            }
+            cast(ray_hole, at, col, VIEW_W);
+            for (int fine = 2 * col; fine < 2 * col + 2; fine++) {
+                cast(ray_focus, pixels + (FOCUS_START - 1) * STRIDE + fine, fine, 2 * VIEW_W);
+            }
+        }
+        break;
     }
 }
 
@@ -522,8 +612,10 @@ static void pieces(void) {
         int32_t scale = (int32_t)(inv_t[(t - job.t_near) >> INV_STEP] >> 4);   /* focal / depth, Q12 */
         int fine_x = job.cols > VIEW_W, fine_y = job.rows > VIEW_H;
         int col = job.cols / 2 + (((u >> 8) * scale) >> (20 - fine_x));
-        int row = job.horizon + (((job.eye_h * 16 - pz) * scale) >> (16 - fine_y));
+        int row = (job.horizon << fine_y) + (((job.eye_h * 16 - pz) * scale) >> (16 - fine_y));
         if ((unsigned)col >= (unsigned)job.cols || (unsigned)row >= (unsigned)job.rows) continue;
+        /* Outside the focus window's rows only even framebuffer rows show. */
+        if (job.res == PERSP_RES_FOCUS && (row < FOCUS_Y0 || row >= FOCUS_Y1)) row &= ~1;
 
         /* A voxel's worth of pixels, whatever a pixel is. */
         uint8_t *at = (uint8_t *)(job.fb + FB_PIXELS) + row * STRIDE + (fine_x ? col & ~1 : col * 2);
@@ -544,24 +636,23 @@ static void lens(int flat, int pull, int res) {
     had_pull = pull;
     had_res = res;
 
-    /* ys: 1 when a row is one scanline, so everything up and down the
-     * screen counts double. */
-    int ys = (res == PERSP_RES_FINE);
+    /* The picture's size in framebuffer pixels and rows. */
     job.res = res;
     job.cols = res == PERSP_RES_COARSE ? VIEW_W : 2 * VIEW_W;
-    job.rows = VIEW_H << ys;
+    job.rows = (res == PERSP_RES_FINE || res == PERSP_RES_FOCUS) ? 2 * VIEW_H : VIEW_H;
 
     int i = flat >> 4, f = flat & 15;
     int32_t focal = focal_step[i] + (i < 16 ? (focal_step[i + 1] - focal_step[i]) * f / 16 : 0);
     int32_t eye = focal + ((focal * PULL_BACK * pull) >> 16);
-    int32_t horizon = (TARGET_ROW - focal) << ys;
+    int32_t horizon = TARGET_ROW - focal;      /* in coarse rows; a fine ray doubles it */
 
     /* The ground reaches the bottom row at t_near and the top row at t_far. */
     job.focal = focal;
     job.horizon = horizon;
     job.eye_h = eye;
-    job.t_near = (int32_t)((((uint64_t)eye * focal) << (16 + ys)) / (uint32_t)(job.rows - horizon));
-    job.t_far = (int32_t)((((uint64_t)eye * focal) << (16 + ys)) / (uint32_t)(0 - horizon));
+    job.t_near = (int32_t)((((uint64_t)eye * focal) << 16) / (uint32_t)(VIEW_H - horizon));
+    job.t_far = (int32_t)((((uint64_t)eye * focal) << 16) / (uint32_t)(0 - horizon));
+    job.t_focus = (int32_t)((((uint64_t)eye * focal) << 17) / (uint32_t)(FOCUS_START - 2 * horizon));
     if (job.t_far - job.t_near > (int32_t)((INV_N - 2) << INV_STEP)) {
         job.t_far = job.t_near + (int32_t)((INV_N - 2) << INV_STEP);   /* as far as the tables go */
     }
@@ -571,8 +662,9 @@ static void lens(int flat, int pull, int res) {
         inv_t[n] = ((uint32_t)focal << 19) / (t >> 13);
         rise_t[n] = t / (uint32_t)focal;
     }
-    for (int y = 0; y < job.rows; y++) {
-        row_t[y] = (uint32_t)((((uint64_t)focal) << (28 + ys)) / (uint32_t)(y - horizon));
+    /* By scanline; a coarse ray reads every other entry. */
+    for (int y = 0; y < 2 * VIEW_H; y++) {
+        row_t[y] = (uint32_t)((((uint64_t)focal) << 29) / (uint32_t)(y - 2 * horizon));
     }
 }
 
@@ -591,7 +683,14 @@ void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, 
     while (MARS_SYS_COMM6 == SECONDARY_GO);
     pieces();
 
-    if (job.rows > VIEW_H) {
+    if (job.res == PERSP_RES_FOCUS) {
+        /* A framebuffer row to a scanline where the focus window is, and
+         * one to two scanlines above and below it. */
+        for (int k = 0; k < 2 * VIEW_H; k++) {
+            int row = (k >= FOCUS_Y0 && k < FOCUS_Y1) ? k : k & ~1;
+            fb[k] = (uint16_t)(FB_PIXELS + row * (STRIDE / 2));
+        }
+    } else if (job.rows > VIEW_H) {
         for (int k = 0; k < job.rows; k++) fb[k] = (uint16_t)(FB_PIXELS + k * (STRIDE / 2));
     } else {
         for (int k = 0; k < VIEW_H; k++) {

@@ -93,7 +93,7 @@ ROM back.
 | Y, tapped twice | swing back to north |
 | Y, held | tip the view over into the flat one, or back out of it |
 | MODE, held | pull back to show more, until it is let go |
-| MODE, tapped | next resolution: 160x112, 320x112, 320x224 |
+| MODE, tapped | next resolution: 160x112, 320x112, 320x224, focus |
 
 The resolutions are there to be compared by playing. A voxel at the hero
 covers the same 2x2 screen pixels in all three; what changes is how many
@@ -101,6 +101,16 @@ pixels are worked out and how many are copies. In one lit room in ares they
 ran at 30, 20 and 15 frames a second. Each has its own compiled copy of the
 ray routine, so nothing is decided per pixel. Black is written as CRAM
 index 1, not 0: the 32X drops a zero written to the framebuffer as a byte.
+
+Focus draws the middle of the screen fine and the rest coarse. The hero is
+always at the middle, so a fixed window 64 pixels by 94 scanlines holds him
+and the tiles next to him whichever way the camera looks. Coarse columns
+that cross the window leave a hole in it, and two fine rays per column fill
+the hole; a fine ray starts 32 rows below the window, drawing nothing, so
+that whatever stands that near and reaches up into the window is in place
+by the first row that shows. Over two bot-played levels in ares a frame
+took 5671 ticks at the median and 7681 at worst, between 30 and 20 frames
+a second. `make PERSP=1 RES=3` starts in it (RES is 0 to 3).
 
 The flat view is the fixed renderer itself, at its 60 frames a second.
 Getting there is one continuous move: the focal length grows from 128 to
