@@ -84,18 +84,20 @@ endif
 .DEFAULT_GOAL := all
 BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)
 PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)$(if $(RES),-res$(RES))$(if $(STATS),-stats)
-# A new stamp also removes what depends on the kind of build, the ROM
-# included: made in the same second as the stamp, it would not look out of
-# date, and the last kind of build would be left standing.
-BOTOBJS   = port/bot.o sh_src/rogue_plat.o sh_src/m_main.o $(TARGET).elf $(TARGET).32x
-PERSPOBJS = sh_src/rogue_plat.o sh_src/m_main.o sh_src/persp.o sh_src/s_main.o $(TARGET).elf $(TARGET).32x
+# File times here are whole seconds. A stamp waits one out before it is
+# made, so that it is strictly newer than everything the last build left,
+# and everything that depends on the kind of build is made again.
+BOTOBJS   = port/bot.o sh_src/rogue_plat.o sh_src/m_main.o
+PERSPOBJS = sh_src/rogue_plat.o sh_src/m_main.o sh_src/persp.o sh_src/s_main.o
 $(BOTSTAMP):
 	@mkdir -p $(ROMDIR)
-	@rm -f $(ROMDIR)/.bot-* $(BOTOBJS)
+	@rm -f $(ROMDIR)/.bot-*
+	@sleep 1
 	@touch $@
 $(PERSPSTAMP):
 	@mkdir -p $(ROMDIR)
-	@rm -f $(ROMDIR)/.persp-* $(PERSPOBJS)
+	@rm -f $(ROMDIR)/.persp-*
+	@sleep 1
 	@touch $@
 $(BOTOBJS): $(BOTSTAMP)
 $(PERSPOBJS): $(PERSPSTAMP)
