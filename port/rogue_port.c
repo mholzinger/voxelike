@@ -283,6 +283,20 @@ rogue_depth(void)
 }
 
 /*
+ * rogue_room_id:
+ *	The number of the room the player is in. Passages, and the rooms
+ *	that are only passages, are all -1.
+ */
+int
+rogue_room_id(void)
+{
+    if (proom == NULL || proom < rooms || proom >= &rooms[MAXROOMS]
+	|| (proom->r_flags & ISGONE))
+	    return -1;
+    return (int) (proom - rooms);
+}
+
+/*
  * rogue_tally:
  *	What the player has, for noticing when he gets more of it.
  */

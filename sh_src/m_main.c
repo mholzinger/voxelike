@@ -75,7 +75,7 @@ uint16_t perf_fps, perf_mean, perf_worst;
 #define Y_TAP      15      /* vblanks: a press shorter than this is a tap */
 #define Y_AGAIN    30      /* vblanks: a second tap this soon makes it a double */
 #define SWING      0x500   /* turn per frame when a button swings the camera */
-#define SWING_GENTLY 0x240 /* and at most this when it is following */
+#define SWING_GENTLY 0x300 /* and at most this when it moves by itself */
 #define TIP        8       /* of 256 per frame: tipping over takes half a second */
 #define NORTH      0xC000
 
@@ -88,25 +88,22 @@ int cam_res = PERSP_RES;   /* PERSP_RES_x; make RES=n picks the one to start in 
 uint32_t cam_res_at;       /* vblank it was last changed on, 0 for never */
 static int flat_wanted;
 
-/* The camera that follows by itself.
+/* The camera that looks after itself.
  *
- * It does not chase the hero's every turn. A view from within an eighth of
- * a turn of straight behind him, a three-quarter view, shows where he is
- * going well enough, so while it has one it stays put. When he sets off
- * another way and keeps to it for FOLLOW_AFTER steps, it swings only as far
- * as the nearest three-quarter view. If he is still going that way at
- * SETTLE_AFTER steps, and every SETTLE_AGAIN after, it looks for the best
- * place to watch from and goes there: wherever the least stands between
- * the eye and the hero and what is beside him, and of those the nearest.
- * It does not wait that long if he walks in behind a wall.
- * A fight, where he stands and swings, moves nothing. Turning the camera
+ * Up on the pad means away from the camera, so a camera that turns while
+ * the player is steering takes the steering out of his hands. It therefore
+ * turns at only two moments. When the hero walks into another room, or out
+ * into the passages, it takes up a three-quarter view of the way he came
+ * in: within an eighth of a turn of straight behind him, wherever in that
+ * the least stands in the way and the swing is shortest, which is often no
+ * swing at all. And when he walks in behind a wall on the camera's side
+ * and cannot be seen whole, it goes to the nearest place he can be seen
+ * from. Inside a room it otherwise stays exactly where it is. Turning it
  * by hand holds all this off for HANDS_OFF vblanks. */
-#define FOLLOW_AFTER  2
-#define SETTLE_AFTER  5
-#define SETTLE_AGAIN  4
 #define THREE_QUARTER 0x2000
 #define HANDS_OFF     180
 #define TALL          5      /* voxels over the hero's floor that hide him */
+#define HIDDEN        3      /* hidden_from() at which he cannot be seen whole */
 
 /* How much stands in the way of seeing the hero from the direction yaw
  * looks along: the cells beside him on the eye's side, and one farther. */
@@ -121,7 +118,9 @@ static int hidden_from(uint16_t yaw) {
 		sh2z_sincos((uint16_t)(yaw + around[i]), &s, &c);
 		/* Towards the eye is backwards along the view. */
 		int x = hx - ((c * 10) >> 16), y = hy - ((s * 10) >> 16);
-		if(vox_height_at(x >> 3, y >> 3) - floor >= TALL) score += i ? 2 : 3;
+		/* A wall straight between is what hides him; one to the side of
+		 * that only crowds the view. */
+		if(vox_height_at(x >> 3, y >> 3) - floor >= TALL) score += i ? 1 : 3;
 		if(i == 0) {
 			x = hx - ((c * 18) >> 16);
 			y = hy - ((s * 18) >> 16);
@@ -129,6 +128,26 @@ static int hidden_from(uint16_t yaw) {
 		}
 	}
 	return score;
+}
+
+/* Of the views `step` apart from `from - reach` to `from + reach`, the one
+ * the hero is least hidden from, and of those the shortest swing away. */
+static uint16_t best_view(uint16_t from, int reach, int step) {
+	uint16_t best_yaw = persp_yaw;
+	int best = 0x7FFFFFFF;
+
+	for(int off = -reach; off <= reach; off += step) {
+		uint16_t yaw = (uint16_t)(from + off);
+		int16_t swing = (int16_t)(yaw - persp_yaw);
+		if(swing < 0) swing = (int16_t)-swing;
+		/* Being hidden counts for far more than having to move. */
+		int score = hidden_from(yaw) * 1024 + (swing >> 6);
+		if(score < best) {
+			best = score;
+			best_yaw = yaw;
+		}
+	}
+	return best_yaw;
 }
 
 /* Where the camera should swing to now, if anywhere: returns 1 and sets
@@ -140,47 +159,25 @@ static int follow(uint16_t *target) {
 		{ 0x8000, 0,      0x0000 },
 		{ 0x6000, 0x4000, 0x2000 },
 	};
-	static int was_cx = -1, was_cy, steady;
-	static uint16_t heading;
+	static int was_cx = -1, was_cy, was_room = -2;
 	int dx = vox_hero_cx - was_cx, dy = vox_hero_cy - was_cy;
 	int first = was_cx < 0;
 
 	was_cx = vox_hero_cx;
 	was_cy = vox_hero_cy;
 	if(first || (dx == 0 && dy == 0)) return 0;
-	if(dx < -1 || dx > 1 || dy < -1 || dy > 1) {      /* stairs, a teleport */
-		steady = 0;
-		return 0;
+
+	int room = rogue_room_id();
+	int entered = (room != was_room);
+	was_room = room;
+	if(dx < -1 || dx > 1 || dy < -1 || dy > 1) return 0;   /* stairs, a teleport */
+
+	if(entered) {
+		*target = best_view(heading_of[dy + 1][dx + 1], THREE_QUARTER, 0x1000);
+		return *target != persp_yaw;
 	}
-
-	uint16_t h = heading_of[dy + 1][dx + 1];
-	steady = (steady && h == heading) ? steady + 1 : 1;
-	heading = h;
-
-	if(steady == FOLLOW_AFTER) {
-		int16_t off = (int16_t)(persp_yaw - heading);
-		if(off >= -THREE_QUARTER && off <= THREE_QUARTER) return 0;
-		*target = (uint16_t)(heading + (off > 0 ? THREE_QUARTER : -THREE_QUARTER));
-		return 1;
-	}
-	/* Time to choose a place to watch from: he has kept on long enough, or
-	 * he has walked in behind something. */
-	int due = steady >= SETTLE_AFTER && (steady - SETTLE_AFTER) % SETTLE_AGAIN == 0;
-	if(due || (steady > FOLLOW_AFTER && hidden_from(persp_yaw) >= 3)) {
-		static const int16_t offsets[] = { 0, 0x1000, -0x1000, 0x2000, -0x2000 };
-		int best = 0x7FFF;
-
-		for(unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
-			uint16_t yaw = (uint16_t)(heading + offsets[i]);
-			int16_t swing = (int16_t)(yaw - persp_yaw);
-			if(swing < 0) swing = (int16_t)-swing;
-			/* Being hidden counts for far more than having to move. */
-			int score = hidden_from(yaw) * 64 + (swing >> 9);
-			if(score < best) {
-				best = score;
-				*target = yaw;
-			}
-		}
+	if(hidden_from(persp_yaw) >= HIDDEN) {
+		*target = best_view(persp_yaw, 0x8000 - 0x1000, 0x1000);
 		return *target != persp_yaw;
 	}
 	return 0;
@@ -245,9 +242,9 @@ static void camera_buttons(void) {
 		int16_t d = (int16_t)(target - persp_yaw);   /* the short way round */
 		int most = SWING;
 		if(gently) {
-			/* Following: ease in to rest, never fast. */
-			most = (d < 0 ? -d : d) / 8;
-			most = clamp(most, 0x60, SWING_GENTLY);
+			/* By itself: unhurried, easing in to rest. */
+			most = (d < 0 ? -d : d) / 4;
+			most = clamp(most, 0xC0, SWING_GENTLY);
 		}
 		if(d > most) d = (int16_t)most;
 		if(d < -most) d = (int16_t)-most;

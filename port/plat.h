@@ -19,6 +19,7 @@ unsigned long rogue_who(int x, int y);     /* the monster at a screen cell, or 0
 int  rogue_alive(unsigned long who);       /* is that monster still in the level */
 int  rogue_hp(unsigned long who);          /* its hit points; 1 asks for the player's */
 int  rogue_depth(void);                    /* dungeon level */
+int  rogue_room_id(void);                  /* which room the player is in, -1 in the passages */
 void rogue_tally(int *gold, int *things, int *rank);   /* purse, pack count, experience level */
 int  rogue_ground(int x, int y);           /* how high a cell's ground stands, in voxels */
 unsigned long rogue_attacker(void);        /* next monster that struck at the player, or 0 */

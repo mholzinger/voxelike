@@ -97,15 +97,18 @@ renderers draw the plinths.
 The game's main view is drawn by `sh_src/persp.c`: a camera with perspective
 that circles the hero.
 
-The camera follows by itself, and lazily. While it has a three-quarter view
-of where the hero is going (within an eighth of a turn of straight behind
-him) it stays put. When he sets off another way and keeps to it for two
-steps, it swings only as far as the nearest three-quarter view. If he keeps
-on, or walks in behind a wall, it picks the best place to watch from: where
-the least stands between the eye and the hero, and of those the nearest. A
-fight moves nothing, and turning the camera by hand holds the following off
-for three seconds. The numbers are at the top of `follow()` in
-`sh_src/m_main.c`.
+The camera looks after itself, but seldom moves. Up on the D-pad means
+away from the camera, so a camera that turns while the player is steering
+takes the steering away from him. It turns at two moments only. When the
+hero walks into another room, or out into the passages, it takes up a
+three-quarter view of the way he came in: within an eighth of a turn of
+straight behind him, wherever in that the least stands in the way and the
+swing is shortest. And when he walks in behind a wall and cannot be seen
+whole, it goes to the nearest place he can be seen from. Inside a room it
+otherwise stays where it is. The D-pad keeps the camera direction it had
+when it was first pushed until it is let go, so even those swings do not
+change which way the hero is walking. Turning the camera by hand holds all
+this off for three seconds. See `follow()` in `sh_src/m_main.c`.
 
 | Pad | Camera |
 |---|---|

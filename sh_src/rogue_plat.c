@@ -59,6 +59,12 @@ typedef struct {
 
 static uint16_t prev_pad = 0xFFFF;   /* nothing counts as newly pressed at first */
 
+#ifdef PERSP
+static void pad_turn_latch(uint16_t dir);
+#else
+#define pad_turn_latch(dir) ((void)0)
+#endif
+
 static input_t poll(void (*frame)(void)) {
 	static uint32_t dir_due, last_fire, held_since;
 	static uint16_t last_dir, last_held;
@@ -71,6 +77,7 @@ static input_t poll(void (*frame)(void)) {
 	uint16_t dir = pad & DIR_MASK;
 	in.pressed = pad & ~prev_pad;
 	prev_pad = pad;
+	pad_turn_latch(dir);
 
 	if(dir != last_held) {
 		last_held = dir;
@@ -101,15 +108,27 @@ static void wait_any(void (*frame)(void), int frames) {
 
 #ifdef PERSP
 /* Up on the pad means away from the camera, wherever that points on the
- * map: turn the pad's direction by the camera's, to the nearest eighth. */
+ * map: turn the pad's direction by the camera's, to the nearest eighth.
+ * The camera's direction is taken when the pad is first pushed and kept
+ * until it is let go, so a camera that swings while the hero is walking
+ * does not change which way he walks. */
+static unsigned pad_turn;
+
+static void pad_turn_latch(uint16_t dir) {
+	extern uint16_t persp_yaw;
+	static uint16_t was;
+
+	if(dir && !was) pad_turn = ((uint16_t)(persp_yaw - 0xC000 + 0x1000) >> 13) & 7;
+	was = dir;
+}
+
 static uint16_t camera_dir(uint16_t dir) {
 	static const uint16_t ring[8] = {
 		SEGA_CTRL_UP, SEGA_CTRL_UP | SEGA_CTRL_RIGHT, SEGA_CTRL_RIGHT,
 		SEGA_CTRL_DOWN | SEGA_CTRL_RIGHT, SEGA_CTRL_DOWN, SEGA_CTRL_DOWN | SEGA_CTRL_LEFT,
 		SEGA_CTRL_LEFT, SEGA_CTRL_UP | SEGA_CTRL_LEFT,
 	};
-	extern uint16_t persp_yaw;
-	unsigned turn = ((uint16_t)(persp_yaw - 0xC000 + 0x1000) >> 13) & 7;
+	unsigned turn = pad_turn;
 
 	for(int i = 0; i < 8; i++) {
 		if(ring[i] == dir) return ring[(i + turn) & 7];
