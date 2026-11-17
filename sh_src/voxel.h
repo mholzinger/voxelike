@@ -82,6 +82,9 @@ void vox_hero_lunge(int dx, int dy);
  * framebuffers fb is. Returns how many visible columns had to be drawn. */
 int vox_prepare(uint16_t *fb, int buf, int cam_x, int cam_y);
 
+/* Something else drew on the framebuffers: nothing in them can be kept. */
+void vox_forget(void);
+
 /* Black out or restore the 32X picture without touching the framebuffers. */
 void vox_palette(int on);
 

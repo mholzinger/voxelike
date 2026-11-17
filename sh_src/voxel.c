@@ -662,6 +662,10 @@ void vox_palette(int on) {
     }
 }
 
+void vox_forget(void) {
+    memset(slot_owner, 0xFF, sizeof(slot_owner));
+}
+
 void vox_init(void) {
     vox_palette(1);
     for (int i = 0; i < 256; i++) vox_wtab[i] = (uint16_t)(i * 0x0101);

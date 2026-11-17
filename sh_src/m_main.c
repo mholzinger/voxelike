@@ -58,39 +58,62 @@ uint16_t persp_yaw = 0xC000;
 /* For the HUD of a measuring build. */
 uint16_t perf_fps, perf_mean, perf_worst;
 
-/* The camera's buttons. X and Z swing it round the hero. Y is three things:
- * held, it pulls the camera back to show more, for as long as it is held;
- * tapped, it swings the camera behind the hero, so up on the pad is the way
- * he faces; tapped twice, it swings back to north. */
+/* The camera's buttons.
+ *   X, Z            swing it round the hero
+ *   Y tapped        swing behind the hero, so up on the pad is the way he faces
+ *   Y tapped twice  swing back to north
+ *   Y held          tip the view over into the flat one, or back out of it
+ *   MODE held       pull back to show more, for as long as it is held
+ * The flat view is the fixed renderer's own, at its full frame rate; the
+ * perspective one flattens until the two pictures meet and then hands over.
+ * Turning the camera from the flat view tips it back first. */
 #define Y_TAP      15      /* vblanks: a press shorter than this is a tap */
 #define Y_AGAIN    30      /* vblanks: a second tap this soon makes it a double */
 #define SWING      0x500   /* turn per frame when the camera moves by itself */
+#define TIP        8       /* of 256 per frame: tipping over takes half a second */
 #define NORTH      0xC000
 
 static int cam_pull;       /* 0 close in .. 256 pulled back */
+static int cam_flat;       /* 0 full perspective .. 256 none */
+static int flat_wanted;
 
 static void camera_buttons(void) {
 	static const uint16_t behind[4] = { 0x4000, 0x8000, NORTH, 0x0000 };
 	static uint16_t prev, target;
 	static uint32_t y_since, tapped_at;
-	static int swinging, tapped;
+	static int swinging, tapped, tipped;
 	uint16_t pad = MARS_SYS_COMM8;
 	uint32_t now = MARS_SYS_COMM12;
 
-	if(pad & (SEGA_CTRL_X | SEGA_CTRL_Z)) swinging = 0;
+	if(pad & (SEGA_CTRL_X | SEGA_CTRL_Z)) {
+		swinging = 0;
+		flat_wanted = 0;
+	}
 	if(pad & SEGA_CTRL_X) persp_yaw -= 0x200;
 	if(pad & SEGA_CTRL_Z) persp_yaw += 0x200;
 
-	if((pad & SEGA_CTRL_Y) && !(prev & SEGA_CTRL_Y)) y_since = now;
+	if((pad & SEGA_CTRL_Y) && !(prev & SEGA_CTRL_Y)) {
+		y_since = now;
+		tipped = 0;
+	}
 	if(!(pad & SEGA_CTRL_Y) && (prev & SEGA_CTRL_Y) && now - y_since < Y_TAP) {
 		target = (tapped && now - tapped_at < Y_AGAIN) ? NORTH : behind[vox_hero_face & 3];
 		swinging = 1;
 		tapped = 1;
 		tapped_at = now;
+		if(target != NORTH) flat_wanted = 0;
 	}
-	int held = (pad & SEGA_CTRL_Y) && now - y_since >= Y_TAP;
+	if((pad & SEGA_CTRL_Y) && now - y_since >= Y_TAP && !tipped) {
+		tipped = 1;
+		flat_wanted = !flat_wanted;
+	}
 	prev = pad;
 
+	/* The flat view looks north. */
+	if(flat_wanted && persp_yaw != NORTH) {
+		target = NORTH;
+		swinging = 1;
+	}
 	if(swinging) {
 		int16_t d = (int16_t)(target - persp_yaw);   /* the short way round */
 		if(d > SWING) d = SWING;
@@ -98,7 +121,8 @@ static void camera_buttons(void) {
 		persp_yaw += d;
 		if(persp_yaw == target) swinging = 0;
 	}
-	cam_pull = clamp(cam_pull + (held ? 24 : -24), 0, 256);
+	cam_flat = clamp(cam_flat + (flat_wanted ? TIP : -TIP), 0, 256);
+	cam_pull = clamp(cam_pull + ((pad & SEGA_CTRL_MODE) ? 24 : -24), 0, 256);
 }
 #endif
 
@@ -161,38 +185,51 @@ void game_frame(void) {
 	}
 
 #ifdef PERSP
-	/* Prototype: X and Z swing the camera around the hero. */
-	static int settle;
+	static int settle, was_flat;
 	camera_buttons();
 	if(PERSP > 1) persp_yaw += 0x100;   /* PERSP=2 turns by itself, for measuring */
-	uint16_t yaw = persp_yaw;
 
-	/* While anything moves, and for the frame it comes to rest. */
-	if(vox_moving || settle) persp_creatures();
-	settle = vox_moving;
-
-	uint16_t p0 = frt_read();
-	persp_render((uint16_t *)&MARS_FRAMEBUFFER, vox_hero_x + CELL / 2, vox_hero_y + CELL / 2,
-	             yaw, cam_pull);
-	game_render_ticks = (uint16_t)(frt_read() - p0);
-	(void)first;
-	swapBuffers();
-
-	/* Once a second: frames shown, and the mean and worst time to draw one. */
-	static uint32_t since, sum;
-	static uint16_t frames, worst;
-	frames++;
-	sum += game_render_ticks;
-	if(game_render_ticks > worst) worst = game_render_ticks;
-	if(MARS_SYS_COMM12 - since >= 60) {
-		perf_fps = frames;
-		perf_mean = (uint16_t)(sum / frames);
-		perf_worst = worst;
-		since = MARS_SYS_COMM12;
-		frames = worst = 0;
-		sum = 0;
+	int is_flat = (cam_flat == 256 && persp_yaw == NORTH && cam_pull == 0);
+	if(is_flat && !was_flat) {
+		/* Hand over to the fixed renderer, which has to start from nothing. */
+		vox_forget();
+		first = 1;
 	}
-	return;
+	was_flat = is_flat;
+
+	if(!is_flat) {
+		/* While anything moves, and for the frame it comes to rest. */
+		if(vox_moving || settle) persp_creatures();
+		settle = vox_moving;
+
+		/* Flat, the picture is centred where the fixed view's camera is,
+		 * which stops at the map's edges; in perspective, on the hero. */
+		int hx = vox_hero_x + CELL / 2, hy = vox_hero_y + CELL / 2;
+		int fx = cam_x + VIEW_W / 2, fy = cam_y + VIEW_H / 2 + 4;
+		int px = hx + (((fx - hx) * cam_flat) >> 8);
+		int py = hy + (((fy - hy) * cam_flat) >> 8);
+
+		uint16_t p0 = frt_read();
+		persp_render((uint16_t *)&MARS_FRAMEBUFFER, px, py, persp_yaw, cam_pull, cam_flat);
+		game_render_ticks = (uint16_t)(frt_read() - p0);
+		swapBuffers();
+
+		/* Once a second: frames shown, and the mean and worst time to draw one. */
+		static uint32_t since, sum;
+		static uint16_t frames, worst;
+		frames++;
+		sum += game_render_ticks;
+		if(game_render_ticks > worst) worst = game_render_ticks;
+		if(MARS_SYS_COMM12 - since >= 60) {
+			perf_fps = frames;
+			perf_mean = (uint16_t)(sum / frames);
+			perf_worst = worst;
+			since = MARS_SYS_COMM12;
+			frames = worst = 0;
+			sum = 0;
+		}
+		return;
+	}
 #endif
 	uint16_t t0 = frt_read();
 	int drawn = vox_prepare((uint16_t *)&MARS_FRAMEBUFFER, currentFB, cam_x, cam_y);
