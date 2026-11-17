@@ -329,13 +329,34 @@ void plat_show(const unsigned char *cells, int lines, int cols, int main_screen)
 	}
 }
 
-/* The game ended (death, victory or quitting). Starting over needs Rogue's
- * data reloaded from ROM, which is not written yet. */
+/* Linker symbols _stext and _sdata (C names lose the underscore): where the
+ * initialised data's image sits in the ROM, and how long it is. Their
+ * addresses are the values. */
+extern char stext[], sdata[];
+
+/* Start over the way the console does at power on: reload initialised data
+ * from the ROM, then run the boot code again, which clears everything else.
+ * Rogue keeps its whole game in globals, so this is what gives it a fresh
+ * one. This code and the boot code it jumps to are not disturbed by the
+ * copy: one runs from ROM, the other is rewritten with the same bytes. */
+static void restart(void) {
+	const volatile uint8_t *src = (const volatile uint8_t *)(0x02000000 + (uint32_t)stext);
+	volatile uint8_t *dst = (volatile uint8_t *)0x06000000;
+	for(uint32_t n = (uint32_t)sdata; n; n--) *dst++ = *src++;
+	((void (*)(void))0x06000240)();   /* primary SH-2 entry */
+}
+
+/* The game ended (death, victory or quitting). */
 void plat_exit(int status) {
 	(void)status;
 	text_begin();
 	text_put(16, 12, "THE END", -1, TEXT_YELLOW, 0);
-	text_put(10, 14, "RESET TO PLAY AGAIN", -1, TEXT_WHITE, 0);
+	text_put(8, 14, "PRESS START TO PLAY AGAIN", -1, TEXT_WHITE, 0);
 	text_commit();
-	for(;;) game_blank();
+	while(!(poll(game_blank).pressed & SEGA_CTRL_START));
+
+	text_begin();
+	text_commit();
+	restart();
+	for(;;);
 }

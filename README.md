@@ -6,8 +6,8 @@ the spirit of 3D Dot Game Heroes.
 Status: playable. Rogue 5.4.4 runs unmodified behind the voxel renderer, with
 its messages, status, inventory, item prompts and tombstone on screen and every
 common command reachable from the pad. The hero and all 26 monsters are voxel
-models, and the dungeon scrolls smoothly. Not done: saving, high scores, naming
-items, and restarting after death.
+models, the dungeon scrolls smoothly, and Start begins a new game after death.
+Not done: saving, high scores and naming items.
 
 ## Build
 
