@@ -283,6 +283,18 @@ rogue_depth(void)
 }
 
 /*
+ * rogue_tally:
+ *	What the player has, for noticing when he gets more of it.
+ */
+void
+rogue_tally(int *gold, int *things, int *rank)
+{
+    *gold = purse;
+    *things = inpack;
+    *rank = pstats.s_lvl;
+}
+
+/*
  * room_height:
  *	Rooms stand on plinths 2 to 4 voxels high, chosen so the rooms of
  *	a level differ and so do the levels. 0 if the cell is in no room.

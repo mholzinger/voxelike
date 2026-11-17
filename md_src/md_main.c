@@ -13,6 +13,8 @@ static volatile uint32_t* const vdp_ctrl_wide = (uint32_t*) VDP_CTRL_PORT;
 
 // External functions
 extern uint16_t read_joypad(uint8_t player);
+extern void sound_init(void);
+extern void sound_frame(void);
 
 uint32_t timer = 0;
 uint16_t vramOffset = 0;
@@ -61,12 +63,14 @@ void do_commands(void) {
 __attribute__((section(".data")))
 void main(void) {
 	vdp_color(0, 0x000);
+	sound_init();
 	while(1) {
 		// TODO: Remove this after fixing _vblank
 		while(*vdp_ctrl_port & 8) do_commands();
 		while(!(*vdp_ctrl_port & 8)) do_commands();
 		// Publish pad 1 unsolicited so the SH-2 never blocks on a COMM0 request
 		*mars_comm8 = read_joypad(0);
+		sound_frame();
 		*mars_comm12 = ++timer;
 	}
 }

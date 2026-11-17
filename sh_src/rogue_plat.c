@@ -1,6 +1,7 @@
 #include "mars.h"
 #include "voxel.h"
 #include "text.h"
+#include "sfx.h"
 #include "../port/plat.h"
 
 /* The machine side of the Rogue port. Rogue runs as an ordinary blocking
@@ -303,10 +304,10 @@ static int choose(int n, const char *(*line)(int)) {
 
 		for(;;) {
 			input_t in = poll(game_frame);
-			if(in.pressed & (SEGA_CTRL_A | SEGA_CTRL_C)) return sel;
+			if(in.pressed & (SEGA_CTRL_A | SEGA_CTRL_C)) { sfx(SFX_BLIP); return sel; }
 			if(in.pressed & SEGA_CTRL_B) return -1;
-			if(in.dir & SEGA_CTRL_UP)   { sel = (sel + n - 1) % n; break; }
-			if(in.dir & SEGA_CTRL_DOWN) { sel = (sel + 1) % n; break; }
+			if(in.dir & SEGA_CTRL_UP)   { sfx(SFX_BLIP); sel = (sel + n - 1) % n; break; }
+			if(in.dir & SEGA_CTRL_DOWN) { sfx(SFX_BLIP); sel = (sel + 1) % n; break; }
 		}
 	}
 }
@@ -473,6 +474,26 @@ static int command_key(void) {
 	}
 }
 
+/* Hear it when the player has more gold, more things or more rank than at
+ * the last key, or stands on a new level. */
+static void gains(void) {
+	static int had_gold, had_things, had_rank, had_depth, started;
+	int gold, things, rank, depth = rogue_depth();
+
+	rogue_tally(&gold, &things, &rank);
+	if(started) {
+		if(depth != had_depth) sfx(SFX_STAIRS);
+		else if(rank > had_rank) sfx(SFX_LEVELUP);
+		else if(gold > had_gold) sfx(SFX_GOLD);
+		else if(things > had_things) sfx(SFX_ITEM);
+	}
+	started = 1;
+	had_gold = gold;
+	had_things = things;
+	had_rank = rank;
+	had_depth = depth;
+}
+
 /* A page Rogue showed in a window of its own, waiting for the next key. */
 static const unsigned char *page_cells;
 static int page_lines, page_cols;
@@ -489,10 +510,13 @@ int plat_getkey(void) {
 	}
 	/* The tombstone is drawn on the main screen and wants a return. */
 	if(contains(last, MAP_W, "[Press return")) {
+		sfx(SFX_DEATH);
 		show_page(scr, MAP_H, MAP_W);
 		wait_any(game_blank, PAGE_WAIT);
 		return '\n';
 	}
+
+	gains();
 
 	/* Whatever Rogue drew since the last key is now worth showing. */
 	plat_screen_changed = 1;

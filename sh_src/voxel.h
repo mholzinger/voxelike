@@ -39,6 +39,10 @@ extern int vox_hero_x, vox_hero_y;     /* top left voxel of the hero right now *
 extern int vox_hero_busy;              /* the hero is still walking or lunging */
 extern int vox_hero_jumped;            /* set when the hero moved without walking */
 extern int vox_hero_face;              /* way the hero looks: 0 south, 1 west, 2 north, 3 east */
+/* What happened since this was last cleared, for whoever makes the noise. */
+enum { VOX_STEPPED = 1, VOX_SWUNG = 2, VOX_HIT = 4, VOX_HURT = 8, VOX_BURST = 16 };
+extern int vox_events;
+
 extern int vox_moving;                 /* something walked, lunged or flashed this frame */
 
 /* The level's own character at a cell, whatever stands on it. */

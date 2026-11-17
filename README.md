@@ -11,7 +11,8 @@ and every common command reachable from the pad. The hero and all 26
 monsters are voxel models that walk, hop, jab and fall apart; rooms stand at
 different heights; the world takes turns on a clock while the player stands
 still; and Start begins a new game after death.
-Not done: sound, saving, high scores and naming items. Frame rates here are
+There are sound effects but no music yet.
+Not done: music, saving, high scores and naming items. Frame rates here are
 from the ares emulator, not yet from hardware.
 
 ## Build
@@ -179,6 +180,20 @@ own data, with no change to Rogue's source:
   the hero red.
 - A monster that is gone from Rogue's monster list died, and its sprite is
   thrown apart as loose voxels that fall, lie a moment and vanish.
+
+## Sound
+
+Effects are played by the 68000 on the Mega Drive's PSG (`md_src/sound.c`),
+once a frame, so they cost the SH-2s and the picture nothing. An effect is a
+short list of per-frame pitch and loudness for one of the PSG's four
+channels; effects on different channels play together. The primary SH-2
+asks for them by setting bits in COMM10 (`sh_src/sfx.c`).
+
+What is heard comes from what the game already knows: a step when the hero
+starts across a cell, a swing or a hit when he strikes, a cry when he is
+hurt, a crumble when a monster falls apart, chimes for gold and for
+something picked up, a run down the scale on a new level, a fanfare for a
+new rank, a blip in menus, and a dirge at the tombstone.
 
 ## Time
 

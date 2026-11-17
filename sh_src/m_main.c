@@ -2,6 +2,7 @@
 #include "voxel.h"
 #include "text.h"
 #include "persp.h"
+#include "sfx.h"
 #include "../port/plat.h"
 
 uint32_t lastTick = 0;
@@ -155,6 +156,21 @@ static int hp(uint32_t id)          { return rogue_hp(id); }
 
 static const vox_source_t source = { rogue_under, who, alive, hp, rogue_ground };
 
+/* Turn what the renderer saw happen into noise. A blow that lands is heard
+ * as the hit, not as the swing as well. */
+static void sounds(void) {
+	static const struct { int event, effect; } heard[] = {
+		{ VOX_STEPPED, SFX_STEP }, { VOX_HIT, SFX_HIT }, { VOX_HURT, SFX_HURT },
+		{ VOX_BURST, SFX_BURST },
+	};
+	if((vox_events & VOX_SWUNG) && !(vox_events & (VOX_HIT | VOX_BURST))) sfx(SFX_SWING);
+	for(unsigned i = 0; i < sizeof(heard) / sizeof(heard[0]); i++) {
+		if(vox_events & heard[i].event) sfx(heard[i].effect);
+	}
+	vox_events = 0;
+	sfx_flush();
+}
+
 /* One step of the dungeon display, one vblank long when it keeps up: fold
  * in Rogue's latest screen, move the camera toward the hero, bring the
  * hidden framebuffer up to date and show it. */
@@ -174,6 +190,7 @@ void game_frame(void) {
 		blanked = 0;
 		anim_tick = MARS_SYS_COMM12;
 	}
+	sounds();
 	/* Stairs or a teleport: be there, do not pan across the level. */
 	if(vox_hero_jumped) {
 		vox_hero_jumped = 0;
@@ -264,6 +281,7 @@ void game_blank(void) {
 		vox_palette(0);
 		blanked = 1;
 	}
+	sfx_flush();
 	wait_vblank();
 }
 

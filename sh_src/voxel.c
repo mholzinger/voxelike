@@ -33,6 +33,7 @@ int vox_hero_cx, vox_hero_cy;
 int vox_hero_x, vox_hero_y;
 int vox_hero_busy, vox_hero_jumped;
 int vox_moving;
+int vox_events;
 int vox_hero_face;
 
 /* --- Creatures --------------------------------------------------------
@@ -367,6 +368,7 @@ static void ent_place(uint32_t id, int kind, int cx, int cy, int frames) {
         e->tx = (int16_t)tx;
         e->ty = (int16_t)ty;
         if (frames > 0 && dx <= SLIDE_MAX * CELL && dy <= SLIDE_MAX * CELL) {
+            if (id == HERO_ID) vox_events |= VOX_STEPPED;
             e->left = e->total = (uint8_t)frames;
             return;
         }
@@ -551,6 +553,7 @@ void vox_hero_lunge(int dx, int dy) {
         ents[i].ldy = (int8_t)dy;
         ents[i].face = facing(dx, dy);
         vox_hero_busy = 1;
+        vox_events |= VOX_SWUNG;
     }
 }
 
@@ -631,7 +634,10 @@ void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
         ent_t *e = &ents[i];
         if (!e->seen) {
             stale_ent(e);
-            if (same_level && !(e->id & 0x80000000u) && !src->alive(e->id)) shatter(e);
+            if (same_level && !(e->id & 0x80000000u) && !src->alive(e->id)) {
+                shatter(e);
+                vox_events |= VOX_BURST;
+            }
             *e = ents[--n_ents];
             continue;
         }
@@ -639,6 +645,7 @@ void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
             int hp = src->hp(e->id);
             if (hp < e->hp && same_level) {
                 e->flash = FLASH;
+                vox_events |= e->id == HERO_ID ? VOX_HURT : VOX_HIT;
                 e->flash_wait = (uint8_t)(e->id == HERO_ID ? 0 : 2);
             }
             e->hp = (int16_t)hp;
