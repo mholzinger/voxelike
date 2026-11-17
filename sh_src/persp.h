@@ -17,8 +17,9 @@ void persp_creatures(void);
 extern uint16_t persp_yaw;
 
 /* Draw a whole frame into framebuffer fb. (x, y) is the voxel the camera
- * circles, yaw the direction it looks in sh2zam turns (0xC000 is north). */
-void persp_render(uint16_t *fb, int x, int y, uint16_t yaw);
+ * circles, yaw the direction it looks in sh2zam turns (0xC000 is north),
+ * pull how far it stands back: 0 close in, 256 all the way out. */
+void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull);
 
 /* The secondary SH-2's side of a frame: wait to be asked, draw its share. */
 void persp_secondary(void);

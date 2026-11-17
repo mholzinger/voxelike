@@ -33,6 +33,7 @@ int vox_hero_cx, vox_hero_cy;
 int vox_hero_x, vox_hero_y;
 int vox_hero_busy, vox_hero_jumped;
 int vox_moving;
+int vox_hero_face;
 
 /* --- Creatures --------------------------------------------------------
  * Rogue moves a creature a whole cell at a time. Here each one has a
@@ -468,6 +469,7 @@ static void hero_follow(void) {
         vox_hero_x = ents[i].x;
         vox_hero_y = ents[i].y;
         vox_hero_busy = ents[i].left || ents[i].lunge;
+        vox_hero_face = ents[i].face;
         return;
     }
     vox_hero_busy = 0;

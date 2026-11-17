@@ -57,6 +57,49 @@ uint16_t persp_yaw = 0xC000;
 
 /* For the HUD of a measuring build. */
 uint16_t perf_fps, perf_mean, perf_worst;
+
+/* The camera's buttons. X and Z swing it round the hero. Y is three things:
+ * held, it pulls the camera back to show more, for as long as it is held;
+ * tapped, it swings the camera behind the hero, so up on the pad is the way
+ * he faces; tapped twice, it swings back to north. */
+#define Y_TAP      15      /* vblanks: a press shorter than this is a tap */
+#define Y_AGAIN    30      /* vblanks: a second tap this soon makes it a double */
+#define SWING      0x500   /* turn per frame when the camera moves by itself */
+#define NORTH      0xC000
+
+static int cam_pull;       /* 0 close in .. 256 pulled back */
+
+static void camera_buttons(void) {
+	static const uint16_t behind[4] = { 0x4000, 0x8000, NORTH, 0x0000 };
+	static uint16_t prev, target;
+	static uint32_t y_since, tapped_at;
+	static int swinging, tapped;
+	uint16_t pad = MARS_SYS_COMM8;
+	uint32_t now = MARS_SYS_COMM12;
+
+	if(pad & (SEGA_CTRL_X | SEGA_CTRL_Z)) swinging = 0;
+	if(pad & SEGA_CTRL_X) persp_yaw -= 0x200;
+	if(pad & SEGA_CTRL_Z) persp_yaw += 0x200;
+
+	if((pad & SEGA_CTRL_Y) && !(prev & SEGA_CTRL_Y)) y_since = now;
+	if(!(pad & SEGA_CTRL_Y) && (prev & SEGA_CTRL_Y) && now - y_since < Y_TAP) {
+		target = (tapped && now - tapped_at < Y_AGAIN) ? NORTH : behind[vox_hero_face & 3];
+		swinging = 1;
+		tapped = 1;
+		tapped_at = now;
+	}
+	int held = (pad & SEGA_CTRL_Y) && now - y_since >= Y_TAP;
+	prev = pad;
+
+	if(swinging) {
+		int16_t d = (int16_t)(target - persp_yaw);   /* the short way round */
+		if(d > SWING) d = SWING;
+		if(d < -SWING) d = -SWING;
+		persp_yaw += d;
+		if(persp_yaw == target) swinging = 0;
+	}
+	cam_pull = clamp(cam_pull + (held ? 24 : -24), 0, 256);
+}
 #endif
 
 /* Close a quarter of the distance each frame, at least one fat pixel and
@@ -120,9 +163,7 @@ void game_frame(void) {
 #ifdef PERSP
 	/* Prototype: X and Z swing the camera around the hero. */
 	static int settle;
-	uint16_t pad = MARS_SYS_COMM8;
-	if(pad & SEGA_CTRL_X) persp_yaw -= 0x200;
-	if(pad & SEGA_CTRL_Z) persp_yaw += 0x200;
+	camera_buttons();
 	if(PERSP > 1) persp_yaw += 0x100;   /* PERSP=2 turns by itself, for measuring */
 	uint16_t yaw = persp_yaw;
 
@@ -131,7 +172,8 @@ void game_frame(void) {
 	settle = vox_moving;
 
 	uint16_t p0 = frt_read();
-	persp_render((uint16_t *)&MARS_FRAMEBUFFER, vox_hero_x + CELL / 2, vox_hero_y + CELL / 2, yaw);
+	persp_render((uint16_t *)&MARS_FRAMEBUFFER, vox_hero_x + CELL / 2, vox_hero_y + CELL / 2,
+	             yaw, cam_pull);
 	game_render_ticks = (uint16_t)(frt_read() - p0);
 	(void)first;
 	swapBuffers();

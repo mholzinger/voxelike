@@ -83,8 +83,15 @@ renderers draw the plinths.
 
 `make PERSP=1` builds the same game with a second renderer, `sh_src/persp.c`,
 in place of the cached one: a camera with perspective that circles the hero.
-Hold X or Z to swing it. `PERSP=2` turns it by itself, for measuring. Plain
-`make` brings the normal ROM back.
+`PERSP=2` turns it by itself, for measuring. Plain `make` brings the normal
+ROM back.
+
+| Pad | Camera |
+|---|---|
+| X, Z | swing left and right around the hero |
+| Y, tapped | swing behind the hero, so up on the D-pad is the way he faces |
+| Y, tapped twice | swing back to north |
+| Y, held | pull back to show more, until it is let go |
 
 - It is a voxel-space renderer: one ray per screen column across the ground,
   nearest first. A cell that is one height all over (nothing, floor, wall) is
@@ -98,7 +105,7 @@ Hold X or Z to swing it. `PERSP=2` turns it by itself, for measuring. Plain
 - Each cell's facts sit in one 16 byte record, a cache line, and a floor's
   colours in 64 bytes: on hardware the SH-2's 4K cache decides the speed.
 - Measured in ares over three dungeon levels played by the bot
-  (`make BOT=1 PERSP=2`): a frame takes 3395 ticks at the median and 4941 at
+  (`make BOT=1 PERSP=2`): a frame takes 3420 ticks at the median and 5022 at
   worst, inside the 6000 that 30 frames a second allows. One SH-2 and no
   shortcuts gave 5 frames a second; whole-cell steps 16; the second SH-2 28;
   empty runs and cheaper pixel math 30 and up. ares counts instructions and

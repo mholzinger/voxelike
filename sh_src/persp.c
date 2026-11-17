@@ -19,20 +19,22 @@ typedef int persp_unit;
  * the screen), which is what makes it look down at the hero while vertical
  * things stay vertical. With the eye as high as it is far and the focal
  * length equal to both, a voxel at the hero is one fat pixel wide, tall and
- * deep, the same scale as the fixed view. */
+ * deep, the same scale as the fixed view. The eye is always as high as it
+ * is far back, so the horizon stays put when it pulls away to show more. */
 #define FOCAL     128
-#define EYE_H     128
-#define EYE_BACK  128
-#define HORIZON   (VIEW_H / 2 - EYE_H * FOCAL / EYE_BACK)
+#define EYE_NEAR  128                      /* the eye's height and distance, */
+#define EYE_FAR   224                      /* close in and pulled back */
+#define HORIZON   (VIEW_H / 2 - FOCAL)
 
 /* Depths are Q16 along the view direction. The ground reaches the bottom
- * row at T_NEAR and the top row at T_FAR; nothing else is on screen. */
-#define T_NEAR    ((EYE_H * FOCAL << 8) / (VIEW_H - HORIZON) << 8)
-#define T_FAR     ((EYE_H * FOCAL << 8) / (0 - HORIZON) << 8)
+ * row at depth T_NEAR and the top row at T_FAR, for an eye h voxels up;
+ * nothing else is on screen. */
+#define T_NEAR(h) ((int32_t)(((h) * FOCAL << 8) / (VIEW_H - HORIZON) << 8))
+#define T_FAR(h)  ((int32_t)(((h) * FOCAL << 8) / (0 - HORIZON) << 8))
 #define INV_STEP  14                       /* table entry per 1/4 voxel */
-#define INV_N     1024
+#define INV_N     2048
 
-typedef char far_fits[(T_FAR >> INV_STEP) < INV_N ? 1 : -1];
+typedef char far_fits[(T_FAR(EYE_FAR) >> INV_STEP) < INV_N ? 1 : -1];
 
 #define FB_PIXELS 0x100                    /* after the line table */
 #define MAX_BUMPS 32
@@ -41,8 +43,19 @@ typedef char far_fits[(T_FAR >> INV_STEP) < INV_N ? 1 : -1];
 #define DETAIL    0xFF
 
 static uint32_t inv_t[INV_N];              /* FOCAL / depth, Q16 */
-/* Depth, in Q12, at which a level surface h voxels up shows on each row. */
-static uint32_t plane_t[COL_MAXH + 1][VIEW_H];
+/* Depth, in Q12, at which a level surface one voxel below the eye shows on
+ * each row. One h voxels below shows at h times that. */
+static uint32_t row_t[VIEW_H];
+
+/* One frame's camera, shared by both CPUs. The primary fills it in and
+ * raises COMM6; the secondary draws the odd columns, the primary the even
+ * ones, and the secondary lowers COMM6 when its share is done. */
+static struct {
+    uint16_t *fb;
+    int32_t ex, ey;
+    sh2z_fx_t s, c;
+    int32_t eye_h, t_near, t_far;
+} job;
 
 #define RUN_MAX   15
 
@@ -85,11 +98,7 @@ void persp_init(void) {
             tops[m][i] = c->h ? c->c[c->h - 1] : 0;
         }
     }
-    for (int h = 0; h <= COL_MAXH; h++) {
-        for (int y = 0; y < VIEW_H; y++) {
-            plane_t[h][y] = (uint32_t)((EYE_H - h) * FOCAL * 4096 / (y - HORIZON));
-        }
-    }
+    for (int y = 0; y < VIEW_H; y++) row_t[y] = (uint32_t)(FOCAL * 4096 / (y - HORIZON));
 }
 
 /* The height of a model if all its columns share one, otherwise DETAIL. */
@@ -231,6 +240,7 @@ void persp_creatures(void) {
 __attribute__((section(".ramtext"), noinline))
 static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                 int32_t tdx, int32_t tdy) {
+    const int32_t EYE_H = job.eye_h, T_NEAR = job.t_near, T_FAR = job.t_far;
     int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
     int32_t px = ex + (int32_t)(((int64_t)dx * T_NEAR) >> 16);
     int32_t py = ey + (int32_t)(((int64_t)dy * T_NEAR) >> 16);
@@ -332,9 +342,10 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
             int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> 16);
             if (top < 0) top = 0;
             if (top < ybuf) {
-                const uint32_t *pt = &plane_t[h][ybuf - 1];
+                const uint32_t *pt = &row_t[ybuf - 1];
+                int32_t below = EYE_H - h;
                 for (int n = ybuf - top; n > 0; n--) {
-                    int32_t t = (int32_t)*pt--;
+                    int32_t t = (int32_t)*pt-- * below;
                     *dst = vox_wtab[tex[(AT_X(t) & 7) * CELL + (AT_Y(t) & 7)] + st];
                     dst -= VIEW_W;
                 }
@@ -425,14 +436,6 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
     }
 }
 
-/* One frame's camera, shared by both CPUs. The primary fills it in and
- * raises COMM6; the secondary draws the odd columns, the primary the even
- * ones, and the secondary lowers COMM6 when its share is done. */
-static struct {
-    uint16_t *fb;
-    int32_t ex, ey;
-    sh2z_fx_t s, c;
-} job;
 
 #define SECONDARY_GO  1
 
@@ -477,22 +480,28 @@ static void pieces(void) {
         sh2z_fx_t rx = (px << 12) - job.ex, ry = (py << 12) - job.ey;
         sh2z_fx_t t = sh2z_mul(rx, job.c) + sh2z_mul(ry, job.s);
         sh2z_fx_t u = sh2z_mul(ry, job.c) - sh2z_mul(rx, job.s);
-        if (t < T_NEAR || t > T_FAR) continue;
+        if (t < job.t_near || t > job.t_far) continue;
 
         int32_t scale = (int32_t)(inv_t[t >> INV_STEP] >> 4);      /* FOCAL / depth, Q12 */
         int col = VIEW_W / 2 + (((u >> 8) * scale) >> 20);
-        int row = HORIZON + (((EYE_H * 16 - pz) * scale) >> 16);
+        int row = HORIZON + (((job.eye_h * 16 - pz) * scale) >> 16);
         if ((unsigned)col >= VIEW_W || (unsigned)row >= VIEW_H) continue;
         job.fb[FB_PIXELS + row * VIEW_W + col] = vox_wtab[colour];
     }
 }
 
-void persp_render(uint16_t *fb, int x, int y, uint16_t yaw) {
+void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull) {
     sh2z_sincos(yaw, &job.s, &job.c);
 
-    /* Forward is (c, s) on the ground, right is (-s, c). */
-    job.ex = (x << 16) - job.c * EYE_BACK;
-    job.ey = (y << 16) - job.s * EYE_BACK;
+    /* pull is 0 close in, 256 pulled all the way back. */
+    job.eye_h = EYE_NEAR + (((EYE_FAR - EYE_NEAR) * pull) >> 8);
+    job.t_near = T_NEAR(job.eye_h);
+    job.t_far = T_FAR(job.eye_h);
+
+    /* Forward is (c, s) on the ground, right is (-s, c). The eye is as far
+     * back as it is high. */
+    job.ex = (x << 16) - job.c * job.eye_h;
+    job.ey = (y << 16) - job.s * job.eye_h;
     job.fb = fb;
 
     MARS_SYS_COMM6 = SECONDARY_GO;
