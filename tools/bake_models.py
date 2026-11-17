@@ -13,8 +13,10 @@ can be checked without building a ROM.
 A camera that does turn (sh_src/persp.c) needs the creature itself. --solid
 writes each one as 8x8 columns of voxels, the same shape as a terrain model,
 so the renderer can stand it on a cell. Columns are solid from the ground
-up: a gap under an arm or a belly is filled with shadow, and a creature
-drawn hovering is set down on the floor.
+up: where the side view is cut away under something solid the layer is
+filled out to it, a gap the front view shows (between legs, under a belly)
+is filled with shadow, and a creature drawn hovering is set down on the
+floor.
 """
 import argparse, os, struct, sys, zlib
 
@@ -54,9 +56,9 @@ def read_creatures(path, keys):
             cur = creatures[ch] = {"name": name, "layers": []}
             continue
         parts = line.split()
-        if cur is None or len(parts) != 2 or len(parts[0]) != CELL or len(parts[1]) != CELL:
-            die(f"{path}:{n}: want 8 front characters, a space, 8 side characters")
-        for c in parts[0]:
+        if cur is None or len(parts) not in (2, 3) or any(len(p) != CELL for p in parts):
+            die(f"{path}:{n}: want 8 front characters, 8 side characters and maybe 8 back ones")
+        for c in parts[0] + "".join(parts[2:]):
             if c != "." and c not in keys:
                 die(f"{path}:{n}: no material has key '{c}'")
         if parts[1].strip(".#"):
@@ -76,7 +78,7 @@ def bake(creature, keys):
     def voxel(x, y, z):
         if not 0 <= z < height:
             return 0
-        front, side = layers[height - 1 - z]
+        front, side = layers[height - 1 - z][:2]
         return keys[front[x]] if front[x] != "." and side[y] == "#" else 0
 
     sprite = [[0] * ROWS for _ in range(CELL)]
@@ -100,18 +102,28 @@ def solid(creature, keys, shadow):
         layers = layers[:-1]              # hovering: set it down
     height = len(layers)
     cols = [[[] for _ in range(CELL)] for _ in range(CELL)]
+
+    def filler(x, z):
+        """What stands in for a missing voxel under a solid one: the layer's
+        own material if the creature is that wide there, otherwise shadow."""
+        front = layers[height - 1 - z][0]
+        return keys[front[x]] if front[x] != "." else shadow
+
     for z in range(height):
-        front, side = layers[height - 1 - z]
-        # Seen from behind there is no face: the back half of a layer takes
-        # the layer's commonest material.
+        front, side = layers[height - 1 - z][:2]
+        # The back half of a layer is coloured from the back view, which is
+        # drawn as seen from behind and so runs the other way. Without one
+        # there is no face to show: it takes the layer's commonest material.
+        back = layers[height - 1 - z][2][::-1] if len(layers[height - 1 - z]) == 3 else None
         used = [c for c in front if c != "."]
         plain = keys[max(set(used), key=used.count)] if used else 0
         for x in range(CELL):
             for y in range(CELL):
                 if front[x] != "." and side[y] == "#":
                     col = cols[x][y]
-                    col += [shadow] * (z - len(col))
-                    col.append(keys[front[x]] if y >= CELL // 2 else plain)
+                    col += [filler(x, k) for k in range(len(col), z)]
+                    behind = keys[back[x]] if back and back[x] != "." else plain
+                    col.append(keys[front[x]] if y >= CELL // 2 else behind)
     return cols
 
 

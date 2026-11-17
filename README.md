@@ -113,10 +113,15 @@ Hold X or Z to swing it. `PERSP=2` turns it by itself, for measuring. Plain
   mid-step and mid-hop included. A flash colours the whole model.
 - Up on the D-pad is away from the camera: the pad's direction is turned by
   the camera's, to the nearest eighth of a circle.
-- Prototype limits: a creature is solid from the ground up (a gap under a
-  belly is shadow, and fliers stand on the floor), its back is drawn without
-  a face but otherwise from the front view, the dead vanish with no burst of
-  voxels, and far floor shimmers. The build uses 225K of the 256K of RAM.
+- The loose voxels of something that died are placed over the finished
+  picture where the camera sees them.
+- A creature's art may carry a back view (a third group of 8 per layer in
+  `models/creatures.txt`); the hero has one. Without it the back half takes
+  each layer's commonest material, so there is no face on the back.
+- Prototype limits: a creature is solid from the ground up (a gap between
+  legs is shadow, and fliers stand on the floor), loose voxels show through
+  walls for the moment they last, and far floor shimmers. The build uses
+  225K of the 256K of RAM.
 
 ## Combat on screen
 

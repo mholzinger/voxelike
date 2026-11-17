@@ -10,20 +10,24 @@
 # that layer, so two flat drawings carve one 3D shape. Layers left off the
 # bottom do not exist; blank layers at the bottom make a creature hover.
 # At most 14 layers.
+#
+# A third group of 8 is the back view, as seen from behind, for the camera
+# that turns: it colours the back half of the layer. Without it the back
+# half takes the layer's commonest material.
 
 = @ hero
-..hhhh.. ..####..
-.hhhhhh. ..####..
-.sesses. ..####..
-.ssssss. ..####..
-GGGGGGGG ...##...
-sGGGGGGs ...##...
-.GGGGGG. ..####..
-.nnnnnn. ..####..
-.GGGGGG. ..####..
-.GG..GG. ...##...
-.NN..NN. ...##...
-.NN..NN. ...###..
+..hhhh.. ..####.. ..hhhh..
+.hhhhhh. ..####.. .hhhhhh.
+.sesses. ..####.. .hhhhhh.
+.ssssss. ..####.. .shhhhs.
+GGGGGGGG ...##... GGGGGGGG
+sGGGGGGs ...##... sGGGGGGs
+.GGGGGG. ..####.. .GGGGGG.
+.nnnnnn. ..####.. .nnnnnn.
+.GGGGGG. ..####.. .GGGGGG.
+.GG..GG. ...##... .GG..GG.
+.NN..NN. ...##... .NN..NN.
+.NN..NN. ...###.. .NN..NN.
 
 = A aquator
 ..bbbb.. ..####..

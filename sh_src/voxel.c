@@ -416,9 +416,10 @@ static void shatter(const ent_t *e) {
             unsigned v = ent_sprite[e->kind][lx][k];
             if (!v || n++ % skip || n_parts == MAX_PARTS) continue;
 
-            /* The sprite is flat; give the pixel a place in the middle of
-             * the footprint at the height that puts it on the same row. */
-            int y = ey + CELL / 2, z = CELL / 2 + ENT_ORIGIN - k;
+            /* The sprite is flat; give the pixel a depth somewhere in the
+             * footprint, and the height that puts it on the same row. */
+            int d = 1 + (int)(chance() % (CELL - 2));
+            int y = ey + d, z = d + ENT_ORIGIN - k;
             if (z < 0) { y -= z; z = 0; }
             z += lift_under(ex, ey);
 
@@ -516,6 +517,16 @@ void vox_jab(uint32_t id) {
     if (e->ldx || e->ldy) e->face = facing(e->ldx, e->ldy);
     /* If the hero was just hurt, this is the blow that did it. */
     if (hero->flash) hero->flash_wait = JAB_WAIT + 2;
+}
+
+int vox_piece(int i, int *x, int *y, int *z, unsigned *colour) {
+    if (i >= n_parts) return 0;
+    const part_t *p = &parts[i];
+    *x = p->x;
+    *y = p->y;
+    *z = p->z;
+    *colour = (p->pixel & ~7u) + ((p->pixel & 1) ? 7 : 5);
+    return 1;
 }
 
 int vox_creature(int i, vox_creature_t *c) {

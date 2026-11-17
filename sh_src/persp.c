@@ -466,6 +466,27 @@ void persp_secondary(void) {
     MARS_SYS_COMM6 = 0;
 }
 
+/* Loose voxels are too few and too brief to give the rays something to
+ * hit. Each is put where the camera sees it, over the finished picture; one
+ * that should be behind a wall shows through it for the moment it lasts. */
+static void pieces(void) {
+    int px, py, pz;
+    unsigned colour;
+
+    for (int i = 0; vox_piece(i, &px, &py, &pz, &colour); i++) {
+        sh2z_fx_t rx = (px << 12) - job.ex, ry = (py << 12) - job.ey;
+        sh2z_fx_t t = sh2z_mul(rx, job.c) + sh2z_mul(ry, job.s);
+        sh2z_fx_t u = sh2z_mul(ry, job.c) - sh2z_mul(rx, job.s);
+        if (t < T_NEAR || t > T_FAR) continue;
+
+        int32_t scale = (int32_t)(inv_t[t >> INV_STEP] >> 4);      /* FOCAL / depth, Q12 */
+        int col = VIEW_W / 2 + (((u >> 8) * scale) >> 20);
+        int row = HORIZON + (((EYE_H * 16 - pz) * scale) >> 16);
+        if ((unsigned)col >= VIEW_W || (unsigned)row >= VIEW_H) continue;
+        job.fb[FB_PIXELS + row * VIEW_W + col] = vox_wtab[colour];
+    }
+}
+
 void persp_render(uint16_t *fb, int x, int y, uint16_t yaw) {
     sh2z_sincos(yaw, &job.s, &job.c);
 
@@ -477,6 +498,7 @@ void persp_render(uint16_t *fb, int x, int y, uint16_t yaw) {
     MARS_SYS_COMM6 = SECONDARY_GO;
     columns(0);
     while (MARS_SYS_COMM6 == SECONDARY_GO);
+    pieces();
 
     for (int k = 0; k < VIEW_H; k++) {
         fb[2 * k] = fb[2 * k + 1] = (uint16_t)(FB_PIXELS + k * VIEW_W);

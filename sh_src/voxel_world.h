@@ -23,6 +23,10 @@ typedef struct {
     uint8_t flash;         /* CRAM index it is flashing, or 0 */
 } vox_creature_t;
 
+/* The i'th loose voxel of something that died: where it is, in sixteenths
+ * of a voxel, and its CRAM index. 0 past the last one. */
+int vox_piece(int i, int *x, int *y, int *z, unsigned *colour);
+
 /* The i'th creature on screen. 0 past the last one. */
 int vox_creature(int i, vox_creature_t *c);
 
