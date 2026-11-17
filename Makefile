@@ -97,7 +97,9 @@ SHCCFLAGS += -I$(SH2ZDIR)/include
 ARES   ?= $(HOME)/src/ares-debug/build_macos/headless-ui/Release/ares-headless
 FRAMES ?= 180
 
-MISTER ?= root@mister.office.local
+# Where make deploy copies the ROM: set MISTER in the environment or on the
+# command line.
+MISTER ?= root@mister.local
 
 .PHONY: all release debug shot deploy clean
 
