@@ -62,6 +62,24 @@ tools/bake_models.py --preview shots/creatures.png
 
 draws every creature with the renderer's projection, no ROM needed.
 
+## Perspective prototype
+
+`make PERSP=1` builds the same game with a second renderer, `sh_src/persp.c`,
+in place of the cached one: a camera with perspective that circles the hero.
+Hold X or Z to swing it. `PERSP=2` turns it by itself, for measuring. Plain
+`make` brings the normal ROM back.
+
+- It is a voxel-space renderer: one ray per screen column across the ground,
+  nearest first. A cell that is one height all over (nothing, floor, wall) is
+  settled in one step; other cells are walked voxel by voxel.
+- The camera basis and per-column reciprocals come from SH2ZAM
+  (`third_party/SH2ZAM`, MIT, a vendored subset).
+- Measured in ares, one SH-2: about 16 frames a second in a lit room. ares
+  counts instructions and not memory waits, so hardware will differ.
+- Prototype limits: creatures are plain blocks that jump from cell to cell,
+  the D-pad still moves in map directions whatever way the camera faces, far
+  floor shimmers, and the second SH-2 is not used yet.
+
 ## Combat on screen
 
 Rogue reports a fight as text. The renderer shows it by watching the game's

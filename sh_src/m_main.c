@@ -1,6 +1,7 @@
 #include "mars.h"
 #include "voxel.h"
 #include "text.h"
+#include "persp.h"
 #include "../port/plat.h"
 
 uint32_t lastTick = 0;
@@ -77,6 +78,9 @@ void game_frame(void) {
 		vox_load_screen(rogue_screen(), &source, rogue_room(room) ? room : 0,
 		                rogue_depth(), plat_step_frames);
 		for(uint32_t id; (id = rogue_attacker()) != 0; ) vox_jab(id);
+#ifdef PERSP
+		persp_sync();
+#endif
 	}
 	if(blanked) {
 		vox_palette(1);
@@ -106,6 +110,21 @@ void game_frame(void) {
 		cam_y = ease(cam_y, ty);
 	}
 
+#ifdef PERSP
+	/* Prototype: X and Z swing the camera around the hero. */
+	static uint16_t yaw = 0xC000;
+	uint16_t pad = MARS_SYS_COMM8;
+	if(pad & SEGA_CTRL_X) yaw -= 0x200;
+	if(pad & SEGA_CTRL_Z) yaw += 0x200;
+	if(PERSP > 1) yaw += 0x100;   /* PERSP=2 turns by itself, for measuring */
+
+	uint16_t p0 = frt_read();
+	persp_render((uint16_t *)&MARS_FRAMEBUFFER, vox_hero_x + CELL / 2, vox_hero_y + CELL / 2, yaw);
+	game_render_ticks = (uint16_t)(frt_read() - p0);
+	(void)first;
+	swapBuffers();
+	return;
+#endif
 	uint16_t t0 = frt_read();
 	int drawn = vox_prepare((uint16_t *)&MARS_FRAMEBUFFER, currentFB, cam_x, cam_y);
 	game_render_ticks = (uint16_t)(frt_read() - t0);
@@ -136,6 +155,9 @@ int m_main(void) {
 
 	frt_init();
 	vox_init();
+#ifdef PERSP
+	persp_init();
+#endif
 
 	/* The moment Start goes down seeds the dungeon. */
 	text_begin();

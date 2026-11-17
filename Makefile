@@ -62,19 +62,35 @@ PTCS    = $(wildcard port/*.c)
 SHOBJS += $(RGCS:.c=.o) $(PTCS:.c=.o)
 RGFLAGS = -m2 -mb -O2 -fomit-frame-pointer -ffreestanding -Iport/include -Irogue -Iport
 
-# make BOT=1 builds a ROM that plays itself, for tools/botrun.py. The stamp
-# makes switching between the two kinds of build recompile what differs.
+# make BOT=1 builds a ROM that plays itself, for tools/botrun.py.
+# make PERSP=1 swaps in the prototype perspective renderer (sh_src/persp.c);
+# PERSP=2 also turns the camera by itself. The stamp makes switching between
+# kinds of build recompile what differs.
 ifdef BOT
 RGFLAGS   += -DBOT
 SHCCFLAGS += -DBOT
 endif
+ifdef PERSP
+SHCCFLAGS += -DPERSP=$(PERSP)
+endif
 .DEFAULT_GOAL := all
 BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)
+PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)
 $(BOTSTAMP):
 	@mkdir -p $(ROMDIR)
 	@rm -f $(ROMDIR)/.bot-*
 	@touch $@
+$(PERSPSTAMP):
+	@mkdir -p $(ROMDIR)
+	@rm -f $(ROMDIR)/.persp-*
+	@touch $@
 port/bot.o sh_src/rogue_plat.o: $(BOTSTAMP)
+sh_src/m_main.o sh_src/persp.o: $(PERSPSTAMP)
+
+# SH2ZAM fixed-point math (vendored subset, MIT): its own dialect.
+SH2ZDIR  = third_party/SH2ZAM
+SHOBJS  += $(SH2ZDIR)/src/sh2zam.o $(SH2ZDIR)/src/sh2zam_trig.o
+SHCCFLAGS += -I$(SH2ZDIR)/include
 
 # Headless emulator used by 'make shot' (ares fork in ~/src/ares-debug)
 ARES   ?= $(HOME)/src/ares-debug/build_macos/headless-ui/Release/ares-headless
@@ -162,6 +178,10 @@ sh_src/mars_start.o: $(MDTARGET).bin
 sh_src/%.o: sh_src/%.s
 	@echo "SHAS $<"
 	@$(SHAS) $(SHASFLAGS) $< -o $@
+
+$(SH2ZDIR)/src/%.o: $(SH2ZDIR)/src/%.c
+	@echo "SHCC $<"
+	@$(SHCC) $(filter-out -std=c99 -pedantic,$(SHCCFLAGS)) -std=c11 $(SHEXTRA) -DSH2Z_REQUIRE_SH2=1 -MMD -MP -c $< -o $@
 
 rogue/%.o: rogue/%.c
 	@echo "RGCC $<"

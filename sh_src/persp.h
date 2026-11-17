@@ -1,0 +1,17 @@
+#ifndef PERSP_H
+#define PERSP_H
+
+#include <stdint.h>
+
+/* The perspective renderer: a prototype, in PERSP builds only. The same
+ * world as voxel.c draws, seen through a camera that orbits the hero. */
+void persp_init(void);
+
+/* The world changed (a screen was loaded): take it in again. */
+void persp_sync(void);
+
+/* Draw a whole frame into framebuffer fb. (x, y) is the voxel the camera
+ * circles, yaw the direction it looks in sh2zam turns (0xC000 is north). */
+void persp_render(uint16_t *fb, int x, int y, uint16_t yaw);
+
+#endif

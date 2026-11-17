@@ -1,16 +1,17 @@
 #include "mars.h"
 #include "string.h"
 #include "voxel.h"
+#include "voxel_world.h"
 #include "baked.h"
 
 /* --- Materials ------------------------------------------------------
  * CRAM is laid out as material * 8 + shade, shade 7 brightest. Material 0
  * is reserved so index 0 stays the transparent void. The materials
- * themselves come from models/materials.txt by way of baked.h. */
+ * themselves come from vox_models/materials.txt by way of baked.h. */
 #define N_SHADES 8
 #define MAT(n)   ((n) * N_SHADES)
 
-/* --- Terrain models ------------------------------------------------- */
+/* --- Terrain vox_models ------------------------------------------------- */
 enum {
     M_VOID, M_FLOOR, M_FLOOR2, M_WALL, M_WALL_LOW, M_DOOR_H, M_DOOR_LOW, M_DOOR_V,
     M_PASSAGE, M_STAIRS, M_TRAP, M_GOLD, M_POTION, M_SCROLL, M_FOOD, M_WEAPON,
@@ -18,12 +19,12 @@ enum {
     M_COUNT
 };
 
-static vmodel_t models[M_COUNT];
-static uint16_t wtab[256];                /* CRAM index -> doubled pixel word */
+vmodel_t vox_models[M_COUNT];
+uint16_t vox_wtab[256];              /* CRAM index -> doubled pixel word */
 
 /* The world as last loaded, one entry per Rogue screen cell. */
-static uint8_t vox_tile[MAP_H][MAP_W];    /* terrain model */
-static uint8_t vox_light[MAP_H][MAP_W];   /* top-face shade 0..7 */
+uint8_t vox_tile[MAP_H][MAP_W];    /* terrain model */
+uint8_t vox_light[MAP_H][MAP_W];   /* top-face shade 0..7 */
 
 int vox_hero_cx, vox_hero_cy;
 int vox_hero_x, vox_hero_y;
@@ -84,7 +85,7 @@ static const int8_t lunge_reach[LUNGE + 1] = { 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 
 #define LIGHT_DIM     3    /* seen before, not in view now */
 
 /* A front face is darker than the top face lit by the same light. */
-static const uint8_t front_shade[N_SHADES] = { 0, 0, 1, 2, 2, 3, 4, 5 };
+const uint8_t vox_front_shade[N_SHADES] = { 0, 0, 1, 2, 2, 3, 4, 5 };
 
 /* --- The canvas ------------------------------------------------------
  * Each framebuffer keeps a rendered strip of the world, so moving the
@@ -137,22 +138,22 @@ static void stack(vmodel_t *m, int x0, int x1, int y0, int y1, int n, uint8_t ma
 }
 
 static void build_models(void) {
-    memset(models, 0, sizeof(models));
+    memset(vox_models, 0, sizeof(vox_models));
 
     for (int lx = 0; lx < CELL; lx++) {
         for (int ly = 0; ly < CELL; ly++) {
             int edge = (lx == 0 || ly == 0);
             int speck = ((lx * 5 + ly * 3) ^ (lx * ly)) & 3;
 
-            col_set(&models[M_FLOOR].col[lx][ly], 1,
+            col_set(&vox_models[M_FLOOR].col[lx][ly], 1,
                     edge ? MAT(MT_GROUT) : MAT(MT_STONE));
-            col_set(&models[M_FLOOR2].col[lx][ly], 1,
+            col_set(&vox_models[M_FLOOR2].col[lx][ly], 1,
                     edge ? MAT(MT_GROUT) : MAT(MT_STONE2));
-            col_set(&models[M_PASSAGE].col[lx][ly], 1,
+            col_set(&vox_models[M_PASSAGE].col[lx][ly], 1,
                     speck ? MAT(MT_DIRT) : MAT(MT_DIRT2));
 
             /* Brick courses two voxels tall, staggered, under a cap stone. */
-            vcol_t *w = &models[M_WALL].col[lx][ly];
+            vcol_t *w = &vox_models[M_WALL].col[lx][ly];
             w->h = 8;
             for (int z = 0; z < 8; z++) {
                 int course = z >> 1;
@@ -163,74 +164,74 @@ static void build_models(void) {
 
             /* A room's near wall is cut down so it cannot hide the row of
              * floor behind it from this camera. */
-            vcol_t *wl = &models[M_WALL_LOW].col[lx][ly];
+            vcol_t *wl = &vox_models[M_WALL_LOW].col[lx][ly];
             col_set(wl, 2, MAT(MT_BRICKB));
             wl->c[1] = MAT(MT_CAP);
 
             /* Door in a horizontal wall: posts left and right. */
-            vcol_t *dh = &models[M_DOOR_H].col[lx][ly];
+            vcol_t *dh = &vox_models[M_DOOR_H].col[lx][ly];
             col_set(dh, 1, MAT(MT_WOOD));
             if (lx == 0 || lx == CELL - 1) col_set(dh, 10, MAT(MT_CAP));
 
-            vcol_t *dl = &models[M_DOOR_LOW].col[lx][ly];
+            vcol_t *dl = &vox_models[M_DOOR_LOW].col[lx][ly];
             col_set(dl, 1, MAT(MT_WOOD));
             if (lx == 0 || lx == CELL - 1) col_set(dl, 3, MAT(MT_CAP));
 
             /* Door in a vertical wall: a tall back post and a low front
              * stub, so the opening stays visible from this camera. */
-            vcol_t *dv = &models[M_DOOR_V].col[lx][ly];
+            vcol_t *dv = &vox_models[M_DOOR_V].col[lx][ly];
             col_set(dv, 1, MAT(MT_WOOD));
             if (ly == 0) col_set(dv, 10, MAT(MT_CAP));
             if (ly == CELL - 1) col_set(dv, 3, MAT(MT_CAP));
 
             int step = lx >> 1;
-            col_set(&models[M_STAIRS].col[lx][ly], 1 + step,
+            col_set(&vox_models[M_STAIRS].col[lx][ly], 1 + step,
                     (step & 1) ? MAT(MT_STAIR) : MAT(MT_CAP));
         }
     }
 
     /* Things lying on the floor. */
-    for (int m = M_TRAP; m < M_COUNT; m++) models[m] = models[M_FLOOR];
+    for (int m = M_TRAP; m < M_COUNT; m++) vox_models[m] = vox_models[M_FLOOR];
 
     for (int i = 0; i < 4; i++)
-        stack(&models[M_TRAP], 2 + (i & 1) * 3, 2 + (i & 1) * 3,
+        stack(&vox_models[M_TRAP], 2 + (i & 1) * 3, 2 + (i & 1) * 3,
               2 + (i >> 1) * 3, 2 + (i >> 1) * 3, 2, MAT(MT_STEEL));
 
-    stack(&models[M_GOLD], 2, 5, 2, 5, 1, MAT(MT_GOLD));
-    stack(&models[M_GOLD], 3, 4, 3, 4, 2, MAT(MT_GOLD));
+    stack(&vox_models[M_GOLD], 2, 5, 2, 5, 1, MAT(MT_GOLD));
+    stack(&vox_models[M_GOLD], 3, 4, 3, 4, 2, MAT(MT_GOLD));
 
-    stack(&models[M_POTION], 2, 5, 3, 4, 2, MAT(MT_POTION));
-    stack(&models[M_POTION], 3, 4, 3, 4, 1, MAT(MT_POTION));
-    stack(&models[M_POTION], 3, 4, 3, 4, 1, MAT(MT_CAP));
+    stack(&vox_models[M_POTION], 2, 5, 3, 4, 2, MAT(MT_POTION));
+    stack(&vox_models[M_POTION], 3, 4, 3, 4, 1, MAT(MT_POTION));
+    stack(&vox_models[M_POTION], 3, 4, 3, 4, 1, MAT(MT_CAP));
 
-    stack(&models[M_SCROLL], 2, 5, 3, 4, 1, MAT(MT_PAPER));
-    stack(&models[M_SCROLL], 2, 2, 3, 4, 1, MAT(MT_PAPER));
-    stack(&models[M_SCROLL], 5, 5, 3, 4, 1, MAT(MT_PAPER));
+    stack(&vox_models[M_SCROLL], 2, 5, 3, 4, 1, MAT(MT_PAPER));
+    stack(&vox_models[M_SCROLL], 2, 2, 3, 4, 1, MAT(MT_PAPER));
+    stack(&vox_models[M_SCROLL], 5, 5, 3, 4, 1, MAT(MT_PAPER));
 
-    stack(&models[M_FOOD], 2, 5, 2, 5, 1, MAT(MT_FOOD));
-    stack(&models[M_FOOD], 3, 4, 3, 4, 1, MAT(MT_FOOD));
-    stack(&models[M_FOOD], 3, 3, 3, 3, 1, MAT(MT_TUNIC));
+    stack(&vox_models[M_FOOD], 2, 5, 2, 5, 1, MAT(MT_FOOD));
+    stack(&vox_models[M_FOOD], 3, 4, 3, 4, 1, MAT(MT_FOOD));
+    stack(&vox_models[M_FOOD], 3, 3, 3, 3, 1, MAT(MT_TUNIC));
 
-    stack(&models[M_WEAPON], 2, 5, 3, 3, 1, MAT(MT_WOOD));
-    stack(&models[M_WEAPON], 3, 4, 3, 3, 5, MAT(MT_STEEL));
+    stack(&vox_models[M_WEAPON], 2, 5, 3, 3, 1, MAT(MT_WOOD));
+    stack(&vox_models[M_WEAPON], 3, 4, 3, 3, 5, MAT(MT_STEEL));
 
-    stack(&models[M_ARMOR], 2, 5, 3, 4, 3, MAT(MT_STEEL));
-    stack(&models[M_ARMOR], 3, 4, 3, 4, 1, MAT(MT_STEEL));
+    stack(&vox_models[M_ARMOR], 2, 5, 3, 4, 3, MAT(MT_STEEL));
+    stack(&vox_models[M_ARMOR], 3, 4, 3, 4, 1, MAT(MT_STEEL));
 
-    stack(&models[M_RING], 2, 5, 2, 2, 1, MAT(MT_GOLD));
-    stack(&models[M_RING], 2, 5, 5, 5, 1, MAT(MT_GOLD));
-    stack(&models[M_RING], 2, 2, 3, 4, 1, MAT(MT_GOLD));
-    stack(&models[M_RING], 5, 5, 3, 4, 1, MAT(MT_GOLD));
-    stack(&models[M_RING], 3, 4, 5, 5, 1, MAT(MT_RED));
+    stack(&vox_models[M_RING], 2, 5, 2, 2, 1, MAT(MT_GOLD));
+    stack(&vox_models[M_RING], 2, 5, 5, 5, 1, MAT(MT_GOLD));
+    stack(&vox_models[M_RING], 2, 2, 3, 4, 1, MAT(MT_GOLD));
+    stack(&vox_models[M_RING], 5, 5, 3, 4, 1, MAT(MT_GOLD));
+    stack(&vox_models[M_RING], 3, 4, 5, 5, 1, MAT(MT_RED));
 
     for (int i = 0; i < 4; i++)
-        stack(&models[M_STICK], 2 + i, 2 + i, 5 - i, 5 - i, 1 + i, MAT(MT_WOOD));
-    stack(&models[M_STICK], 5, 5, 2, 2, 1, MAT(MT_MAGIC));
+        stack(&vox_models[M_STICK], 2 + i, 2 + i, 5 - i, 5 - i, 1 + i, MAT(MT_WOOD));
+    stack(&vox_models[M_STICK], 5, 5, 2, 2, 1, MAT(MT_MAGIC));
 
-    stack(&models[M_AMULET], 3, 4, 3, 4, 2, MAT(MT_GOLD));
-    stack(&models[M_AMULET], 3, 4, 3, 4, 1, MAT(MT_RED));
+    stack(&vox_models[M_AMULET], 3, 4, 3, 4, 2, MAT(MT_GOLD));
+    stack(&vox_models[M_AMULET], 3, 4, 3, 4, 1, MAT(MT_RED));
 
-    stack(&models[M_MAGIC], 3, 4, 3, 4, 3, MAT(MT_MAGIC));
+    stack(&vox_models[M_MAGIC], 3, 4, 3, 4, 3, MAT(MT_MAGIC));
 }
 
 static int is_wall(int ch) {
@@ -476,6 +477,35 @@ void vox_jab(uint32_t id) {
     if (hero->flash) hero->flash_wait = JAB_WAIT + 2;
 }
 
+int vox_creature(int i, int *cx, int *cy, int *kind) {
+    if (i >= n_ents) return 0;
+    *cx = ents[i].tx / CELL;
+    *cy = ents[i].ty / CELL;
+    *kind = ents[i].kind;
+    return 1;
+}
+
+/* The hero is known; anything else is the material its sprite uses most. */
+uint8_t vox_creature_colour(int kind, int z) {
+    static const uint8_t hero[10] = {
+        MAT(MT_BOOT), MAT(MT_BOOT), MAT(MT_TUNIC), MAT(MT_TUNIC), MAT(MT_BELT),
+        MAT(MT_TUNIC), MAT(MT_TUNIC), MAT(MT_SKIN), MAT(MT_SKIN), MAT(MT_HAIR),
+    };
+    static uint8_t main_mat[N_ENTS];
+
+    if (kind == 0) return hero[z];
+    if (!main_mat[kind]) {
+        uint8_t count[MT_COUNT] = { 0 };
+        int best = 1;
+        for (int lx = 0; lx < CELL; lx++) {
+            for (int k = 0; k < ENT_ROWS; k++) count[ent_sprite[kind][lx][k] >> 3]++;
+        }
+        for (int m = 1; m < MT_COUNT; m++) if (count[m] > count[best]) best = m;
+        main_mat[kind] = (uint8_t)MAT(best);
+    }
+    return main_mat[kind];
+}
+
 void vox_hero_lunge(int dx, int dy) {
     for (int i = 0; i < n_ents; i++) {
         if (ents[i].id != HERO_ID) continue;
@@ -576,7 +606,7 @@ void vox_palette(int on) {
 
 void vox_init(void) {
     vox_palette(1);
-    for (int i = 0; i < 256; i++) wtab[i] = (uint16_t)(i * 0x0101);
+    for (int i = 0; i < 256; i++) vox_wtab[i] = (uint16_t)(i * 0x0101);
     memset(slot_owner, 0xFF, sizeof(slot_owner));
     memset(dirty_lo, 0xFF, sizeof(dirty_lo));
     build_models();
@@ -632,7 +662,7 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
         in[k].near = (int16_t)(ey + CELL - 1);
         in[k].row0 = (int16_t)(ey - ROW_MIN - ENT_ORIGIN - e->z);
         in[k].st = (uint8_t)st;
-        in[k].sf = front_shade[st];
+        in[k].sf = vox_front_shade[st];
         in[k].n = ENT_ROWS;
         in[k].flash = (e->flash && !e->flash_wait)
                     ? (e->id == HERO_ID ? FLASH_HERO : FLASH_OTHER) : 0;
@@ -649,7 +679,7 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
         in[k].near = (int16_t)py;
         in[k].row0 = (int16_t)row;
         in[k].st = (uint8_t)st;
-        in[k].sf = front_shade[st];
+        in[k].sf = vox_front_shade[st];
         in[k].n = 1;
         in[k].flash = 0;
     }
@@ -668,9 +698,9 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
 
     while (limit > ra && vy >= 0) {
         int cy = vy >> 3;
-        const vcol_t *col = &models[vox_tile[cy][cx]].col[lx][vy & 7];
+        const vcol_t *col = &vox_models[vox_tile[cy][cx]].col[lx][vy & 7];
         unsigned st = vox_light[cy][cx];
-        unsigned sf = front_shade[st];
+        unsigned sf = vox_front_shade[st];
 
         do {
             while (vy == next) {
@@ -683,9 +713,9 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
                 int stop = top < 0 ? -1 : top;
                 int n = limit - 1 - stop;
                 int z = r - (limit - 1);
-                while (n-- > 0) PUT(wtab[col->c[z++] + sf]);
+                while (n-- > 0) PUT(vox_wtab[col->c[z++] + sf]);
                 if (top < 0) { limit = 0; break; }
-                PUT(h ? wtab[col->c[h - 1] + st] : 0);
+                PUT(h ? vox_wtab[col->c[h - 1] + st] : 0);
                 limit = top;
             }
             col--; r--; vy--;
@@ -699,8 +729,8 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
         for (int k = 0; k < in[noted].n; k++, row++) {
             unsigned v = rows[k];
             if (!v || row < 0 || row >= in[noted].clip) continue;
-            uint16_t w = wtab[(v & ~7u) + ((v & 1) ? in[noted].st : in[noted].sf)];
-            if (in[noted].flash) w = wtab[in[noted].flash];
+            uint16_t w = vox_wtab[(v & ~7u) + ((v & 1) ? in[noted].st : in[noted].sf)];
+            if (in[noted].flash) w = vox_wtab[in[noted].flash];
             a = row * STRIDE + X;
             if (a >= TAPE) a -= TAPE;
             tape[a] = w;
