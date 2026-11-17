@@ -50,7 +50,7 @@ static uint32_t inv_t[INV_N];              /* focal length / depth, Q16 */
 static uint32_t rise_t[INV_N];             /* depth / focal length, Q16: voxels per row */
 /* Depth, in Q28, at which a level surface one voxel below the eye shows on
  * each row. One h voxels below shows at h times that. */
-static uint32_t row_t[VIEW_H];
+static uint32_t row_t[2 * VIEW_H];
 
 /* One frame's camera, shared by both CPUs. The primary fills it in and
  * raises COMM6; the secondary draws the odd columns, the primary the even
@@ -61,7 +61,20 @@ static struct {
     sh2z_fx_t s, c;
     int32_t focal, horizon;
     int32_t eye_h, t_near, t_far;
+    int res;               /* PERSP_RES_x: how finely the picture is drawn */
+    int cols, rows;
 } job;
+
+/* The framebuffer is 320 bytes a row whatever the resolution. A coarse
+ * column is two pixels wide, written as one word; a coarse row is shown on
+ * two scanlines by the line table. */
+#define STRIDE    320
+typedef uint16_t __attribute__((may_alias)) pair_t;
+
+/* The 32X does not store a zero written to its framebuffer as a byte, so
+ * that sprites can be drawn with holes in them. Nothing is CRAM index 1,
+ * which the palette keeps as black as index 0. */
+#define BLACK     0x0101
 
 #define RUN_MAX   15
 
@@ -241,9 +254,18 @@ void persp_creatures(void) {
  * voxel it shows. Any other cell is walked voxel column by voxel column,
  * each adding its near side and its top. Everything is drawn nearest first
  * and bottom up. */
-__attribute__((section(".ramtext"), noinline))
-static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
-                int32_t tdx, int32_t tdy) {
+/* WIDE and YS are constants where this is used, so each resolution gets a
+ * copy of its own with nothing left to decide per pixel: WIDE for columns
+ * two pixels wide, YS 1 for rows one scanline tall. */
+#define PIXEL(w) do {                                          \
+        if (WIDE) *(pair_t *)dst = (uint16_t)(w);              \
+        else      *dst = (uint8_t)(w);                         \
+        dst -= STRIDE;                                         \
+    } while (0)
+
+static inline __attribute__((always_inline))
+void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
+         int32_t tdx, int32_t tdy, const int WIDE, const int YS) {
     const int32_t EYE_H = job.eye_h, T_NEAR = job.t_near, T_FAR = job.t_far;
     const int32_t HORIZON = job.horizon;
 #define INV(t)  inv_t[((t) - T_NEAR) >> INV_STEP]
@@ -270,7 +292,7 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
 #define AT_Y(t12) ((int)(((int64_t)dy20 * (int32_t)(t12) + ey48) >> 32))
 
     int32_t t_in = T_NEAR;
-    int ybuf = VIEW_H;                     /* rows at and below this are drawn */
+    int ybuf = VIEW_H << YS;               /* rows at and below this are drawn */
     int prev_h = 0, x_side = 0;
 
     for (;;) {
@@ -305,12 +327,11 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
 
         if (kind == 0) {
             uint32_t s = INV(t_out);
-            int top = HORIZON + (int)(((uint32_t)EYE_H * s) >> 16);
+            int top = HORIZON + (int)(((uint32_t)EYE_H * s) >> (16 - YS));
             if (top < 0) top = 0;
             if (top < ybuf) {
                 for (int n = ybuf - top; n > 0; n--) {
-                    *dst = 0;
-                    dst -= VIEW_W;
+                    PIXEL(BLACK);
                 }
                 ybuf = top;
                 if (ybuf == 0) return;
@@ -322,21 +343,20 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
             /* The side the ray comes in by: one voxel column of it. */
             if (h > prev_h) {
                 uint32_t s = INV(t_in);
-                int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> 16);
+                int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
                 if (top < 0) top = 0;
                 if (top < ybuf) {
                     int32_t tq = (t_in >> 4) + 1;
                     const uint8_t *c = m->col[AT_X(tq) & 7][AT_Y(tq) & 7].c;
                     unsigned sf = vox_front_shade[st];
                     if (x_side && sf) sf--;
-                    int32_t zstep = (int32_t)RISE(t_in);
+                    int32_t zstep = (int32_t)RISE(t_in) >> YS;
                     int32_t z = (EYE_H << 16) - (ybuf - 1 - HORIZON) * zstep;
                     for (int n = ybuf - top; n > 0; n--) {
                         int zi = z >> 16;
                         if (zi < 0) zi = 0;
                         if (zi >= h) zi = h - 1;
-                        *dst = vox_wtab[(zi < lift ? plinth : c[zi - lift]) + sf];
-                        dst -= VIEW_W;
+                        PIXEL(vox_wtab[(zi < lift ? plinth : c[zi - lift]) + sf]);
                         z += zstep;
                     }
                     ybuf = top;
@@ -346,15 +366,14 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
 
             /* The top, each row worked back to the voxel under it. */
             uint32_t s = INV(t_out);
-            int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> 16);
+            int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
             if (top < 0) top = 0;
             if (top < ybuf) {
                 const uint32_t *pt = &row_t[ybuf - 1];
                 int32_t below = EYE_H - h;
                 for (int n = ybuf - top; n > 0; n--) {
                     int32_t t = (int32_t)(((uint64_t)*pt-- * (uint32_t)below) >> 16);
-                    *dst = vox_wtab[tex[(AT_X(t) & 7) * CELL + (AT_Y(t) & 7)] + st];
-                    dst -= VIEW_W;
+                    PIXEL(vox_wtab[tex[(AT_X(t) & 7) * CELL + (AT_Y(t) & 7)] + st]);
                 }
                 ybuf = top;
                 if (ybuf == 0) return;
@@ -382,18 +401,17 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                 /* The side that faces the eye, where the ray came in. */
                 if (h > prev_h) {
                     uint32_t s = INV(tv_in);
-                    int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> 16);
+                    int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
                     if (top < 0) top = 0;
                     if (top < ybuf) {
                         unsigned sf = (x_side && sf0) ? sf0 - 1 : sf0;
-                        int32_t zstep = (int32_t)RISE(tv_in);
+                        int32_t zstep = (int32_t)RISE(tv_in) >> YS;
                         int32_t z = (EYE_H << 16) - (ybuf - 1 - HORIZON) * zstep;
                         for (int n = ybuf - top; n > 0; n--) {
                             int zi = z >> 16;
                             if (zi < 0) zi = 0;
                             if (zi >= h) zi = h - 1;
-                            *dst = vox_wtab[(zi < lift ? plinth : col->c[zi - lift]) + sf];
-                            dst -= VIEW_W;
+                            PIXEL(vox_wtab[(zi < lift ? plinth : col->c[zi - lift]) + sf]);
                             z += zstep;
                         }
                         ybuf = top;
@@ -407,14 +425,13 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                 if (tv_out > t_out) tv_out = t_out;
                 {
                     uint32_t s = INV(tv_out);
-                    int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> 16);
+                    int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
                     if (top < 0) top = 0;
                     if (top < ybuf) {
                         uint16_t w = col->h ? vox_wtab[col->c[col->h - 1] + st]
-                                            : (h ? vox_wtab[plinth + st] : 0);
+                                            : (h ? vox_wtab[plinth + st] : BLACK);
                         for (int n = ybuf - top; n > 0; n--) {
-                            *dst = w;
-                            dst -= VIEW_W;
+                            PIXEL(w);
                         }
                         ybuf = top;
                         if (ybuf == 0) return;
@@ -438,21 +455,32 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
         t_in = t_out;
     }
     while (ybuf-- > 0) {
-        *dst = 0;
-        dst -= VIEW_W;
+        PIXEL(BLACK);
     }
 }
 
 
+#define RAY(name, wide, ys)                                                        \
+    __attribute__((section(".ramtext"), noinline))                                 \
+    static void name(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy, \
+                     int32_t tdx, int32_t tdy) {                                   \
+        ray(dst, ex, ey, dx, dy, tdx, tdy, wide, ys);                              \
+    }
+RAY(ray_coarse, 1, 0)
+RAY(ray_wide, 0, 0)
+RAY(ray_fine, 0, 1)
+
 #define SECONDARY_GO  1
 
 static void columns(int first) {
-    uint16_t *fb = job.fb;
+    uint8_t *bottom = (uint8_t *)(job.fb + FB_PIXELS) + (job.rows - 1) * STRIDE;
     int32_t ex = job.ex, ey = job.ey;
     sh2z_fx_t s = job.s, c = job.c;
+    int res = job.res, cols = job.cols;
+    int32_t across = job.focal * (cols / VIEW_W);   /* focal length in columns */
 
-    for (int col = first; col < VIEW_W; col += 2) {
-        sh2z_fx_t k = ((2 * col - (VIEW_W - 1)) << 16) / (2 * job.focal);
+    for (int col = first; col < cols; col += 2) {
+        sh2z_fx_t k = ((2 * col - (cols - 1)) << 16) / (2 * across);
         sh2z_fx_t dx = c - sh2z_mul(s, k);
         sh2z_fx_t dy = s + sh2z_mul(c, k);
 
@@ -463,7 +491,9 @@ static void columns(int first) {
         if (tdx > 0x1000000) tdx = NEVER;
         if (tdy > 0x1000000) tdy = NEVER;
 
-        ray(fb + FB_PIXELS + (VIEW_H - 1) * VIEW_W + col, ex, ey, dx, dy, tdx, tdy);
+        if (res == PERSP_RES_COARSE)    ray_coarse(bottom + col * 2, ex, ey, dx, dy, tdx, tdy);
+        else if (res == PERSP_RES_WIDE) ray_wide(bottom + col, ex, ey, dx, dy, tdx, tdy);
+        else                            ray_fine(bottom + col, ex, ey, dx, dy, tdx, tdy);
     }
 }
 
@@ -490,10 +520,15 @@ static void pieces(void) {
         if (t < job.t_near || t > job.t_far) continue;
 
         int32_t scale = (int32_t)(inv_t[(t - job.t_near) >> INV_STEP] >> 4);   /* focal / depth, Q12 */
-        int col = VIEW_W / 2 + (((u >> 8) * scale) >> 20);
-        int row = job.horizon + (((job.eye_h * 16 - pz) * scale) >> 16);
-        if ((unsigned)col >= VIEW_W || (unsigned)row >= VIEW_H) continue;
-        job.fb[FB_PIXELS + row * VIEW_W + col] = vox_wtab[colour];
+        int fine_x = job.cols > VIEW_W, fine_y = job.rows > VIEW_H;
+        int col = job.cols / 2 + (((u >> 8) * scale) >> (20 - fine_x));
+        int row = job.horizon + (((job.eye_h * 16 - pz) * scale) >> (16 - fine_y));
+        if ((unsigned)col >= (unsigned)job.cols || (unsigned)row >= (unsigned)job.rows) continue;
+
+        /* A voxel's worth of pixels, whatever a pixel is. */
+        uint8_t *at = (uint8_t *)(job.fb + FB_PIXELS) + row * STRIDE + (fine_x ? col & ~1 : col * 2);
+        *(pair_t *)at = vox_wtab[colour];
+        if (fine_y && row + 1 < job.rows) *(pair_t *)(at + STRIDE) = vox_wtab[colour];
     }
 }
 
@@ -502,23 +537,31 @@ static void pieces(void) {
  * back, which keeps the hero on the same row and the ground as deep on
  * screen as it is wide. The tables follow, and are only worked out again
  * when the lens changes. */
-static void lens(int flat, int pull) {
-    static int had_flat = -1, had_pull = -1;
-    if (flat == had_flat && pull == had_pull) return;
+static void lens(int flat, int pull, int res) {
+    static int had_flat = -1, had_pull = -1, had_res = -1;
+    if (flat == had_flat && pull == had_pull && res == had_res) return;
     had_flat = flat;
     had_pull = pull;
+    had_res = res;
+
+    /* ys: 1 when a row is one scanline, so everything up and down the
+     * screen counts double. */
+    int ys = (res == PERSP_RES_FINE);
+    job.res = res;
+    job.cols = res == PERSP_RES_COARSE ? VIEW_W : 2 * VIEW_W;
+    job.rows = VIEW_H << ys;
 
     int i = flat >> 4, f = flat & 15;
     int32_t focal = focal_step[i] + (i < 16 ? (focal_step[i + 1] - focal_step[i]) * f / 16 : 0);
     int32_t eye = focal + ((focal * PULL_BACK * pull) >> 16);
-    int32_t horizon = TARGET_ROW - focal;
+    int32_t horizon = (TARGET_ROW - focal) << ys;
 
     /* The ground reaches the bottom row at t_near and the top row at t_far. */
     job.focal = focal;
     job.horizon = horizon;
     job.eye_h = eye;
-    job.t_near = (int32_t)((((uint64_t)eye * focal) << 16) / (uint32_t)(VIEW_H - horizon));
-    job.t_far = (int32_t)((((uint64_t)eye * focal) << 16) / (uint32_t)(0 - horizon));
+    job.t_near = (int32_t)((((uint64_t)eye * focal) << (16 + ys)) / (uint32_t)(job.rows - horizon));
+    job.t_far = (int32_t)((((uint64_t)eye * focal) << (16 + ys)) / (uint32_t)(0 - horizon));
     if (job.t_far - job.t_near > (int32_t)((INV_N - 2) << INV_STEP)) {
         job.t_far = job.t_near + (int32_t)((INV_N - 2) << INV_STEP);   /* as far as the tables go */
     }
@@ -528,14 +571,14 @@ static void lens(int flat, int pull) {
         inv_t[n] = ((uint32_t)focal << 19) / (t >> 13);
         rise_t[n] = t / (uint32_t)focal;
     }
-    for (int y = 0; y < VIEW_H; y++) {
-        row_t[y] = (uint32_t)((((uint64_t)focal) << 28) / (uint32_t)(y - horizon));
+    for (int y = 0; y < job.rows; y++) {
+        row_t[y] = (uint32_t)((((uint64_t)focal) << (28 + ys)) / (uint32_t)(y - horizon));
     }
 }
 
-void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat) {
+void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, int res) {
     sh2z_sincos(yaw, &job.s, &job.c);
-    lens(flat, pull);
+    lens(flat, pull, res);
 
     /* Forward is (c, s) on the ground, right is (-s, c). The eye is as far
      * back as it is high. */
@@ -548,8 +591,12 @@ void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat) 
     while (MARS_SYS_COMM6 == SECONDARY_GO);
     pieces();
 
-    for (int k = 0; k < VIEW_H; k++) {
-        fb[2 * k] = fb[2 * k + 1] = (uint16_t)(FB_PIXELS + k * VIEW_W);
+    if (job.rows > VIEW_H) {
+        for (int k = 0; k < job.rows; k++) fb[k] = (uint16_t)(FB_PIXELS + k * (STRIDE / 2));
+    } else {
+        for (int k = 0; k < VIEW_H; k++) {
+            fb[2 * k] = fb[2 * k + 1] = (uint16_t)(FB_PIXELS + k * (STRIDE / 2));
+        }
     }
 }
 #endif

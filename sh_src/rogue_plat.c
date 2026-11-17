@@ -216,11 +216,14 @@ static void compose_hud(void) {
 	/* A measuring build says how it is doing: frames a second, then the
 	 * mean and worst FRT ticks to draw one (3000 ticks is one vblank). */
 	{
+		static const char *const res_name[] = { " 160x112", " 320x112", " 320x224" };
 		extern uint16_t perf_fps, perf_mean, perf_worst;
-		char line[32], *p = line;
+		extern int cam_res;
+		char line[48], *p = line;
 		p = put_number(p, "FPS ", perf_fps);
-		p = put_number(p, "  MEAN ", perf_mean);
-		p = put_number(p, "  WORST ", perf_worst);
+		p = put_number(p, " MEAN ", perf_mean);
+		p = put_number(p, " WORST ", perf_worst);
+		for(const char *r = res_name[cam_res]; *r; ) *p++ = *r++;
 		*p = 0;
 		text_put(HUD_X, STATUS_ROW - 2, line, HUD_W, TEXT_YELLOW, 1);
 	}

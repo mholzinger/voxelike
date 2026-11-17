@@ -64,6 +64,7 @@ uint16_t perf_fps, perf_mean, perf_worst;
  *   Y tapped twice  swing back to north
  *   Y held          tip the view over into the flat one, or back out of it
  *   MODE held       pull back to show more, for as long as it is held
+ *   MODE tapped     next picture resolution: 160x112, 320x112, 320x224
  * The flat view is the fixed renderer's own, at its full frame rate; the
  * perspective one flattens until the two pictures meet and then hands over.
  * Turning the camera from the flat view tips it back first. */
@@ -75,12 +76,13 @@ uint16_t perf_fps, perf_mean, perf_worst;
 
 static int cam_pull;       /* 0 close in .. 256 pulled back */
 static int cam_flat;       /* 0 full perspective .. 256 none */
+int cam_res;               /* PERSP_RES_x */
 static int flat_wanted;
 
 static void camera_buttons(void) {
 	static const uint16_t behind[4] = { 0x4000, 0x8000, NORTH, 0x0000 };
 	static uint16_t prev, target;
-	static uint32_t y_since, tapped_at;
+	static uint32_t y_since, tapped_at, mode_since;
 	static int swinging, tapped, tipped;
 	uint16_t pad = MARS_SYS_COMM8;
 	uint32_t now = MARS_SYS_COMM12;
@@ -107,6 +109,11 @@ static void camera_buttons(void) {
 		tipped = 1;
 		flat_wanted = !flat_wanted;
 	}
+	if((pad & SEGA_CTRL_MODE) && !(prev & SEGA_CTRL_MODE)) mode_since = now;
+	if(!(pad & SEGA_CTRL_MODE) && (prev & SEGA_CTRL_MODE) && now - mode_since < Y_TAP) {
+		cam_res = (cam_res + 1) % PERSP_RES_COUNT;
+	}
+	int pulling = (pad & SEGA_CTRL_MODE) && now - mode_since >= Y_TAP;
 	prev = pad;
 
 	/* The flat view looks north. */
@@ -122,7 +129,7 @@ static void camera_buttons(void) {
 		if(persp_yaw == target) swinging = 0;
 	}
 	cam_flat = clamp(cam_flat + (flat_wanted ? TIP : -TIP), 0, 256);
-	cam_pull = clamp(cam_pull + ((pad & SEGA_CTRL_MODE) ? 24 : -24), 0, 256);
+	cam_pull = clamp(cam_pull + (pulling ? 24 : -24), 0, 256);
 }
 #endif
 
@@ -210,7 +217,7 @@ void game_frame(void) {
 		int py = hy + (((fy - hy) * cam_flat) >> 8);
 
 		uint16_t p0 = frt_read();
-		persp_render((uint16_t *)&MARS_FRAMEBUFFER, px, py, persp_yaw, cam_pull, cam_flat);
+		persp_render((uint16_t *)&MARS_FRAMEBUFFER, px, py, persp_yaw, cam_pull, cam_flat, cam_res);
 		game_render_ticks = (uint16_t)(frt_read() - p0);
 		swapBuffers();
 

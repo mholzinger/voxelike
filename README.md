@@ -93,6 +93,14 @@ ROM back.
 | Y, tapped twice | swing back to north |
 | Y, held | tip the view over into the flat one, or back out of it |
 | MODE, held | pull back to show more, until it is let go |
+| MODE, tapped | next resolution: 160x112, 320x112, 320x224 |
+
+The resolutions are there to be compared by playing. A voxel at the hero
+covers the same 2x2 screen pixels in all three; what changes is how many
+pixels are worked out and how many are copies. In one lit room in ares they
+ran at 30, 20 and 15 frames a second. Each has its own compiled copy of the
+ray routine, so nothing is decided per pixel. Black is written as CRAM
+index 1, not 0: the 32X drops a zero written to the framebuffer as a byte.
 
 The flat view is the fixed renderer itself, at its 60 frames a second.
 Getting there is one continuous move: the focal length grows from 128 to
