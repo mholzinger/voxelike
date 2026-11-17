@@ -1,3 +1,6 @@
+/* Only PERSP builds have anything in this file. */
+typedef int persp_unit;
+
 #ifdef PERSP
 #include "mars.h"
 #include "string.h"
