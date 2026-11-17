@@ -16,6 +16,10 @@ void rogue_play(void);
 const unsigned char *rogue_screen(void);   /* the 80x24 screen's cells */
 int  rogue_under(int x, int y);            /* level character at a screen cell */
 unsigned long rogue_who(int x, int y);     /* the monster at a screen cell, or 0 */
+int  rogue_alive(unsigned long who);       /* is that monster still in the level */
+int  rogue_hp(unsigned long who);          /* its hit points; 1 asks for the player's */
+int  rogue_depth(void);                    /* dungeon level */
+unsigned long rogue_attacker(void);        /* next monster that struck at the player, or 0 */
 #ifdef BOT
 int  rogue_bot_key(void);                  /* test builds: the next command, 0 to stand */
 int  rogue_bot_answer(void);               /* test builds: the answer to a prompt */

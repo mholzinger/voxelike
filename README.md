@@ -62,6 +62,20 @@ tools/bake_models.py --preview shots/creatures.png
 
 draws every creature with the renderer's projection, no ROM needed.
 
+## Combat on screen
+
+Rogue reports a fight as text. The renderer shows it by watching the game's
+own data, with no change to Rogue's source:
+
+- The hero jabs at a monster he walks into.
+- A monster that strikes at the hero jabs back a moment later. The linker's
+  `--wrap=attack` routes Rogue's one call to `attack()` through
+  `port/rogue_port.c`, which notes who struck.
+- Anything that lost hit points since the last turn flashes: monsters white,
+  the hero red.
+- A monster that is gone from Rogue's monster list died, and its sprite is
+  thrown apart as loose voxels that fall, lie a moment and vanish.
+
 ## Time
 
 Rogue is still turn based inside, and its source is still untouched. Left

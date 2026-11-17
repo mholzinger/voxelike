@@ -42,17 +42,30 @@ extern int vox_hero_jumped;            /* set when the hero moved without walkin
 typedef int (*vox_under_fn)(int cx, int cy);
 
 /* Who the creature shown at a cell is: the same nonzero number for as long
- * as it lives, or 0 if nobody is really there. Never 1. */
+ * as it lives, or 0 if nobody is really there. Never 1, which is the hero. */
 typedef uint32_t (*vox_who_fn)(int cx, int cy);
+
+/* What the renderer asks the game about its world. */
+typedef struct {
+    vox_under_fn under;
+    vox_who_fn who;
+    int (*alive)(uint32_t id);   /* is this creature still in the level */
+    int (*hp)(uint32_t id);      /* hit points of a living creature, 1 for the hero */
+} vox_source_t;
 
 void vox_init(void);
 
 /* Rebuild the world from Rogue's screen. room is the lit room the hero is
  * in as { x0, y0, x1, y1 } in cells, or NULL in a passage or a dark room.
- * A creature that moved walks to its new cell over `frames` frames. Only
- * what changed is redrawn afterwards. */
-void vox_load_screen(const uint8_t *cells, vox_under_fn under, vox_who_fn who,
-                     const int *room, int frames);
+ * depth is the dungeon level, so a new level is not mistaken for a massacre.
+ * A creature that moved walks to its new cell over `frames` frames, one that
+ * lost hit points flashes, one that died falls to pieces. Only what changed
+ * is redrawn afterwards. */
+void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
+                     const int *room, int depth, int frames);
+
+/* A creature struck at the hero: have it jab that way, a moment from now. */
+void vox_jab(uint32_t id);
 
 /* Move every walking creature on by one frame. */
 void vox_animate(void);

@@ -37,6 +37,12 @@ int vox_hero_busy, vox_hero_jumped;
 #define HERO_ID    1u
 #define HOP_MAX    2
 #define LUNGE      12     /* frames an attack keeps the hero busy */
+#define JAB_WAIT   6      /* frames a creature's answer waits for the hero's blow */
+#define FLASH      5      /* frames a hurt creature shows in one colour */
+#define MAX_PARTS  96
+#define PART_LIFE  28
+#define PART_REST  10     /* frames a piece lies where it fell */
+#define GRAVITY    5      /* 1/16 voxel per frame per frame */
 #define SLIDE_MAX  2      /* cells; a longer move is a teleport, not a walk */
 
 typedef struct {
@@ -49,10 +55,26 @@ typedef struct {
     int8_t ldx, ldy;      /* which way it lunges */
     int8_t ox, oy, z;     /* lunge offset and hop height, now */
     uint8_t seen;
+    uint8_t wait;         /* frames until the lunge starts */
+    uint8_t flash_wait;   /* frames until the flash starts */
+    uint8_t flash;        /* frames of flash left */
+    int16_t hp;           /* hit points when last looked at */
 } ent_t;
 
 static ent_t ents[MAX_ENTS];
 static int n_ents;
+
+/* A loose voxel, in sixteenths: what a creature leaves when it dies. */
+typedef struct {
+    int16_t x, y, z;
+    int8_t vx, vy, vz;
+    uint8_t life;
+    uint8_t pixel;        /* as in a creature sprite: material and face */
+} part_t;
+
+static part_t parts[MAX_PARTS];
+static int n_parts;
+static int last_depth;
 
 static const int8_t hop_z[8] = { 0, 1, 2, 2, 2, 2, 1, 1 };
 static const int8_t lunge_reach[LUNGE + 1] = { 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 2 };
@@ -328,6 +350,78 @@ static void ent_place(uint32_t id, int kind, int cx, int cy, int frames) {
     if (id == HERO_ID) vox_hero_jumped = 1;
 }
 
+static void stale_part(const part_t *p) {
+    int x = p->x >> 4;
+    int r = (p->y >> 4) - (p->z >> 4) - ROW_MIN;
+    stale(x, x, r, r);
+}
+
+static unsigned chance(void) {
+    static uint32_t seed = 12345;
+    seed = seed * 1103515245u + 12345u;
+    return seed >> 16;
+}
+
+/* Turn a creature into loose voxels where it stands: a sample of its
+ * sprite, thrown up and outward. */
+static void shatter(const ent_t *e) {
+    int ex = e->x + e->ox, ey = e->y + e->oy;
+    int total = 0, skip, n = 0;
+
+    for (int lx = 0; lx < CELL; lx++) {
+        for (int k = 0; k < ENT_ROWS; k++) total += ent_sprite[e->kind][lx][k] != 0;
+    }
+    skip = total / 40 + 1;
+
+    for (int lx = 0; lx < CELL; lx++) {
+        for (int k = 0; k < ENT_ROWS; k++) {
+            unsigned v = ent_sprite[e->kind][lx][k];
+            if (!v || n++ % skip || n_parts == MAX_PARTS) continue;
+
+            /* The sprite is flat; give the pixel a place in the middle of
+             * the footprint at the height that puts it on the same row. */
+            int y = ey + CELL / 2, z = CELL / 2 + ENT_ORIGIN - k;
+            if (z < 0) { y -= z; z = 0; }
+
+            part_t *p = &parts[n_parts++];
+            p->x = (int16_t)((ex + lx) << 4);
+            p->y = (int16_t)(y << 4);
+            p->z = (int16_t)(z << 4);
+            p->vx = (int8_t)((lx * 2 - 7) * 2 + (int)(chance() & 7) - 4);
+            p->vy = (int8_t)((int)(chance() & 15) - 8);
+            p->vz = (int8_t)(16 + (chance() & 15));
+            p->life = PART_LIFE;
+            p->pixel = (uint8_t)v;
+            stale_part(p);
+        }
+    }
+}
+
+static void parts_animate(void) {
+    for (int i = 0; i < n_parts; ) {
+        part_t *p = &parts[i];
+        stale_part(p);
+        if (p->z > 0 || p->vz > 0) {
+            p->x += p->vx;
+            p->y += p->vy;
+            p->z += p->vz;
+            p->vz -= GRAVITY;
+            if (p->z <= 0) {
+                p->z = 0;
+                p->vz = 0;
+                if (p->life > PART_REST) p->life = PART_REST;
+            }
+        }
+        if (--p->life == 0 || p->x < 0 || p->x >= (MAP_W * CELL) << 4 ||
+            p->y < CELL << 4 || p->y >= ((MAP_H - 1) * CELL) << 4) {
+            *p = parts[--n_parts];
+            continue;
+        }
+        stale_part(p);
+        i++;
+    }
+}
+
 static void hero_follow(void) {
     for (int i = 0; i < n_ents; i++) {
         if (ents[i].id != HERO_ID) continue;
@@ -342,7 +436,7 @@ static void hero_follow(void) {
 void vox_animate(void) {
     for (int i = 0; i < n_ents; i++) {
         ent_t *e = &ents[i];
-        if (!e->left && !e->lunge) continue;
+        if (!e->left && !e->lunge && !e->flash) continue;
 
         stale_ent(e);
         if (e->left) {
@@ -351,14 +445,35 @@ void vox_animate(void) {
             e->left--;
             e->z = e->left ? hop_z[(e->total - e->left) & 7] : 0;
         }
-        if (e->lunge) {
+        if (e->wait) {
+            e->wait--;
+        } else if (e->lunge) {
             e->lunge--;
             e->ox = (int8_t)(e->ldx * lunge_reach[e->lunge]);
             e->oy = (int8_t)(e->ldy * lunge_reach[e->lunge]);
         }
+        if (e->flash_wait) e->flash_wait--;
+        else if (e->flash) e->flash--;
         stale_ent(e);
     }
+    parts_animate();
     hero_follow();
+}
+
+void vox_jab(uint32_t id) {
+    ent_t *hero = 0, *e = 0;
+
+    for (int i = 0; i < n_ents; i++) {
+        if (ents[i].id == HERO_ID) hero = &ents[i];
+        if (ents[i].id == id) e = &ents[i];
+    }
+    if (!hero || !e) return;
+    e->ldx = (int8_t)((hero->tx > e->tx) - (hero->tx < e->tx));
+    e->ldy = (int8_t)((hero->ty > e->ty) - (hero->ty < e->ty));
+    e->lunge = LUNGE;
+    e->wait = JAB_WAIT;
+    /* If the hero was just hurt, this is the blow that did it. */
+    if (hero->flash) hero->flash_wait = JAB_WAIT + 2;
 }
 
 void vox_hero_lunge(int dx, int dy) {
@@ -373,8 +488,13 @@ void vox_hero_lunge(int dx, int dy) {
 
 /* Row 0 of Rogue's screen is its message line and the last row its status
  * line; neither is dungeon. */
-void vox_load_screen(const uint8_t *cells, vox_under_fn under, vox_who_fn who,
-                     const int *room, int frames) {
+void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
+                     const int *room, int depth, int frames) {
+    vox_under_fn under = src->under;
+    int same_level = (depth == last_depth);
+
+    last_depth = depth;
+    if (!same_level) frames = 0;
     for (int i = 0; i < n_ents; i++) ents[i].seen = 0;
 
     for (int i = MAP_W; i < (MAP_H - 1) * MAP_W; i++) {
@@ -409,18 +529,33 @@ void vox_load_screen(const uint8_t *cells, vox_under_fn under, vox_who_fn who,
 
             if (ent >= 0) {
                 /* A letter nobody answers for is known by where it is. */
-                uint32_t id = ent == 0 ? HERO_ID : who(cx, cy);
+                uint32_t id = ent == 0 ? HERO_ID : src->who(cx, cy);
                 if (id == 0) id = 0x80000000u | (uint32_t)(cy * MAP_W + cx);
                 ent_place(id, ent, cx, cy, frames);
             }
         }
     }
 
-    /* Whatever Rogue no longer shows is gone. */
+    /* Whatever Rogue no longer shows is gone, in pieces if it died. What
+     * is still here and has fewer hit points than before was hurt, and
+     * flashes: at once, or for a monster as the hero's blow lands. */
     for (int i = 0; i < n_ents; ) {
-        if (ents[i].seen) { i++; continue; }
-        stale_ent(&ents[i]);
-        ents[i] = ents[--n_ents];
+        ent_t *e = &ents[i];
+        if (!e->seen) {
+            stale_ent(e);
+            if (same_level && !(e->id & 0x80000000u) && !src->alive(e->id)) shatter(e);
+            *e = ents[--n_ents];
+            continue;
+        }
+        if (!(e->id & 0x80000000u)) {
+            int hp = src->hp(e->id);
+            if (hp < e->hp && same_level) {
+                e->flash = FLASH;
+                e->flash_wait = (uint8_t)(e->id == HERO_ID ? 0 : 2);
+            }
+            e->hp = (int16_t)hp;
+        }
+        i++;
     }
     hero_follow();
 }
@@ -456,7 +591,9 @@ void vox_init(void) {
         if (a < 0) a += TAPE;                         \
     } while (0)
 
-#define MAX_COL_ENTS 8   /* creatures one screen column can pass through */
+#define MAX_COL_ENTS 16  /* creatures and pieces one screen column can hold */
+#define FLASH_HERO   (MAT(MT_RED) + 7)
+#define FLASH_OTHER  (MAT(MT_PAPER) + 7)
 #define ENT_REACH    (ENT_ORIGIN + HOP_MAX)
 
 /* Draw canvas rows ra..rb of world column X into a framebuffer's tape.
@@ -470,13 +607,15 @@ void vox_init(void) {
  * Creatures have gaps, so they cannot join that walk. The ones standing in
  * this column are sorted nearest first, each is given the limit at the
  * moment the walk passes its near edge, which is precisely what the terrain
- * in front of it hides, and they are stamped afterwards, farthest first. */
+ * in front of it hides, and they are stamped afterwards, farthest first.
+ * The last terrain column of the walk may paint above row ra, so whatever
+ * stands in this column is stamped whole, not just rows ra..rb. */
 __attribute__((section(".ramtext"), noinline))
 static void render_column(uint16_t *tape, int X, int ra, int rb) {
     struct {
         const uint8_t *rows;
         int16_t near, row0, clip;
-        uint8_t st, sf;
+        uint8_t st, sf, n, flash;
     } in[MAX_COL_ENTS];
     int n_in = 0, noted = 0;
 
@@ -484,7 +623,7 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
         const ent_t *e = &ents[i];
         int ex = e->x + e->ox, ey = e->y + e->oy;
         if ((unsigned)(X - ex) >= CELL) continue;
-        if (ey - ROW_MIN - ENT_REACH > rb || ey - ROW_MIN + CELL - 1 < ra) continue;
+        if (ey - ROW_MIN - ENT_REACH > rb) continue;
 
         int k = n_in++;
         for (; k > 0 && in[k - 1].near < ey + CELL - 1; k--) in[k] = in[k - 1];
@@ -494,6 +633,25 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
         in[k].row0 = (int16_t)(ey - ROW_MIN - ENT_ORIGIN - e->z);
         in[k].st = (uint8_t)st;
         in[k].sf = front_shade[st];
+        in[k].n = ENT_ROWS;
+        in[k].flash = (e->flash && !e->flash_wait)
+                    ? (e->id == HERO_ID ? FLASH_HERO : FLASH_OTHER) : 0;
+    }
+    for (int i = 0; i < n_parts && n_in < MAX_COL_ENTS; i++) {
+        const part_t *p = &parts[i];
+        int py = p->y >> 4, row = py - (p->z >> 4) - ROW_MIN;
+        if (p->x >> 4 != X || row > rb) continue;
+
+        int k = n_in++;
+        for (; k > 0 && in[k - 1].near < py; k--) in[k] = in[k - 1];
+        unsigned st = vox_light[py >> 3][X >> 3];
+        in[k].rows = &p->pixel;
+        in[k].near = (int16_t)py;
+        in[k].row0 = (int16_t)row;
+        in[k].st = (uint8_t)st;
+        in[k].sf = front_shade[st];
+        in[k].n = 1;
+        in[k].flash = 0;
     }
 
     int cx = X >> 3, lx = X & 7;
@@ -538,10 +696,11 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
     while (noted-- > 0) {
         const uint8_t *rows = in[noted].rows;
         int row = in[noted].row0;
-        for (int k = 0; k < ENT_ROWS; k++, row++) {
+        for (int k = 0; k < in[noted].n; k++, row++) {
             unsigned v = rows[k];
-            if (!v || row < ra || row >= in[noted].clip) continue;
+            if (!v || row < 0 || row >= in[noted].clip) continue;
             uint16_t w = wtab[(v & ~7u) + ((v & 1) ? in[noted].st : in[noted].sf)];
+            if (in[noted].flash) w = wtab[in[noted].flash];
             a = row * STRIDE + X;
             if (a >= TAPE) a -= TAPE;
             tape[a] = w;

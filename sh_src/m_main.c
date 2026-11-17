@@ -61,6 +61,12 @@ static int ease(int from, int to) {
 	return from + clamp(step, -4, 4);
 }
 
+static uint32_t who(int cx, int cy) { return rogue_who(cx, cy); }
+static int alive(uint32_t id)       { return rogue_alive(id); }
+static int hp(uint32_t id)          { return rogue_hp(id); }
+
+static const vox_source_t source = { rogue_under, who, alive, hp };
+
 /* One step of the dungeon display, one vblank long when it keeps up: fold
  * in Rogue's latest screen, move the camera toward the hero, bring the
  * hidden framebuffer up to date and show it. */
@@ -68,8 +74,9 @@ void game_frame(void) {
 	if(plat_screen_changed) {
 		int room[4];
 		plat_screen_changed = 0;
-		vox_load_screen(rogue_screen(), rogue_under, rogue_who,
-		                rogue_room(room) ? room : 0, plat_step_frames);
+		vox_load_screen(rogue_screen(), &source, rogue_room(room) ? room : 0,
+		                rogue_depth(), plat_step_frames);
+		for(uint32_t id; (id = rogue_attacker()) != 0; ) vox_jab(id);
 	}
 	if(blanked) {
 		vox_palette(1);

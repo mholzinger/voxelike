@@ -40,7 +40,8 @@ MDASFLAGS  = -x assembler-with-cpp -Imd_src -m68000 -Wa,--register-prefix-option
 SHASFLAGS  = -I$(ROMDIR) --small
 
 MDLDFLAGS  = -T md_src/md.ld -nostdlib
-SHLDFLAGS  = -T sh_src/mars.ld -nostdlib
+# --wrap=attack: see __wrap_attack in port/rogue_port.c
+SHLDFLAGS  = -T sh_src/mars.ld -nostdlib -Wl,--wrap=attack
 
 # Extra options set by debug or release target
 MDEXTRA =

@@ -250,6 +250,65 @@ rogue_who(int x, int y)
 }
 
 /*
+ * rogue_alive:
+ *	Is the monster rogue_who once named still in the level?
+ */
+int
+rogue_alive(unsigned long who)
+{
+    THING *tp;
+
+    for (tp = mlist; tp != NULL; tp = next(tp))
+	if ((unsigned long) tp == who)
+	    return TRUE;
+    return FALSE;
+}
+
+/*
+ * rogue_hp:
+ *	Hit points of a monster that is alive, or of the player for 1.
+ */
+int
+rogue_hp(unsigned long who)
+{
+    if (who == 1)
+	return pstats.s_hpt;
+    return rogue_alive(who) ? ((THING *) who)->t_stats.s_hpt : 0;
+}
+
+int
+rogue_depth(void)
+{
+    return level;
+}
+
+/*
+ * attack:
+ *	The linker sends chase.c's calls to attack() here first, so the
+ *	machine can show who struck at the player. Rogue's own attack()
+ *	then runs untouched.
+ */
+#define MAXATTACKERS	8
+static THING *attackers[MAXATTACKERS];
+static int n_attackers;
+
+extern int __real_attack(THING *mp);
+
+int
+__wrap_attack(THING *mp)
+{
+    if (n_attackers < MAXATTACKERS)
+	attackers[n_attackers++] = mp;
+    return __real_attack(mp);
+}
+
+unsigned long
+rogue_attacker(void)
+{
+    return n_attackers > 0 ? (unsigned long) attackers[--n_attackers] : 0;
+}
+
+/*
  * rogue_idle:
  *	The world moves on while the player stands and thinks. Those
  *	turns should not starve him, so the stomach is stopped for them.
