@@ -281,3 +281,23 @@ rogue_pack(int index, char *buf, int max)
     sprintf(buf, "%c) %.*s", obj->o_packch, max - 3, inv_name(obj, FALSE));
     return obj->o_packch;
 }
+
+/*
+ * rogue_room:
+ *	Bounds of the lit room the player is in, walls included, as
+ *	{ x0, y0, x1, y1 }. Returns FALSE in a passage or a dark room,
+ *	where the player only sees what is next to him.
+ */
+int
+rogue_room(int *r)
+{
+    struct room *rp = proom;
+
+    if (rp == NULL || (rp->r_flags & (ISGONE | ISDARK)) || on(player, ISBLIND))
+	return FALSE;
+    r[0] = rp->r_pos.x;
+    r[1] = rp->r_pos.y;
+    r[2] = rp->r_pos.x + rp->r_max.x - 1;
+    r[3] = rp->r_pos.y + rp->r_max.y - 1;
+    return TRUE;
+}

@@ -1,0 +1,327 @@
+# Voxel creatures, one per Rogue display character.
+#
+#   = <char> <name>
+#   <front 8> <side 8>      one line per voxel layer, top layer first
+#
+# front is the creature seen from the camera side: each character is a
+# material key from materials.txt, "." is empty. side is its silhouette
+# seen from its right: column 0 is the back, column 7 the front, "#" solid.
+# A voxel exists where the front has a material AND the side is solid on
+# that layer, so two flat drawings carve one 3D shape. Layers left off the
+# bottom do not exist; blank layers at the bottom make a creature hover.
+# At most 14 layers.
+
+= @ hero
+..hhhh.. ..####..
+.hhhhhh. ..####..
+.sesses. ..####..
+.ssssss. ..####..
+GGGGGGGG ...##...
+sGGGGGGs ...##...
+.GGGGGG. ..####..
+.nnnnnn. ..####..
+.GGGGGG. ..####..
+.GG..GG. ...##...
+.NN..NN. ...##...
+.NN..NN. ...###..
+
+= A aquator
+..bbbb.. ..####..
+.bbbbbb. .######.
+.bwkbwk. .######.
+.bbbbbb. .######.
+bbbbbbbb .######.
+bbcbbcbb ########
+
+= B bat
+a......a ...##...
+aa.aa.aa ...##...
+aaaaaaaa ...##...
+.aarraa. ...##...
+..aaaa.. ...##...
+........ ........
+........ ........
+........ ........
+
+= C centaur
+...hh... ......##
+...ss... ......##
+..sGGs.. ......##
+..sGGs.. ......##
+..nnnn.. .#######
+..nnnn.. .#######
+..nnnn.. .#######
+..n..n.. .#....#.
+..n..n.. .#....#.
+..N..N.. .#....#.
+
+= D dragon
+.g....g. ......##
+.gggggg. .....###
+.gyggyg. .....###
+.gggggg. .....###
+..gwwg.. ....####
+c.gggg.c ..######
+ccGGGGcc .#######
+ccGGGGcc .#######
+c.GGGG.c .#######
+..GGGG.. .#######
+..gg.gg. .##..##.
+..gg.gg. .##..##.
+
+= E emu
+...nn... ......#.
+...ny... .....###
+...n.... ......#.
+...n.... ......#.
+..nnnn.. ..#####.
+.nnnnnn. .######.
+.nnnnnn. .######.
+..nnnn.. ..####..
+..o..o.. ...#....
+..o..o.. ...#....
+..o..o.. ...##...
+
+= F venus flytrap
+.g....g. ...##...
+.gr..rg. ..####..
+.grrrrg. ..####..
+.gwrrwg. ..####..
+..gggg.. ..####..
+...gg... ...##...
+...gg... ...##...
+g..gg..g ...##...
+gg.gg.gg ..####..
+.gggggg. .######.
+
+= G griffin
+..ww.... ......##
+.wwyy... ......##
+..ww.... .....###
+.nyyyn.. ..######
+nnyyynn. .#######
+n.yyy.n. .#######
+..yyy... .#######
+..y.y... .#....#.
+..y.y... .#....#.
+
+= H hobgoblin
+..gggg.. ..####..
+.gkggkg. ..####..
+.gggggg. ..####..
+..gwwg.. ..####..
+.nnnnnn. ..####..
+gnnnnnng ...##...
+g.nnnn.g ...##...
+..nnnn.. ..####..
+..g..g.. ...##...
+..g..g.. ...##...
+
+= I ice monster
+..IIII.. ..####..
+.IIIIII. .######.
+.IkIIkI. .######.
+.IIIIII. .######.
+IIIwwIII .######.
+IIIIIIII .######.
+.IIIIII. .######.
+.II..II. ..####..
+.II..II. ..####..
+
+= J jabberwock
+p......p ...##...
+pp.pp.pp ...##...
+.pppppp. ..####..
+.pyppyp. ..####..
+.pppppp. .######.
+..pwwp.. .######.
+pppppppp .######.
+pPPPPPPp .######.
+.PPPPPP. .######.
+.pp..pp. ..####..
+.pp..pp. ..####..
+
+= K kestrel
+o......o ...##...
+oo.oo.oo ...##...
+.oooooo. ..###...
+..okko.. ..####..
+...yy... .....##.
+........ ........
+........ ........
+........ ........
+........ ........
+
+= L leprechaun
+..GGGG.. ..####..
+..GYYG.. ..####..
+.GGGGGG. .######.
+..skks.. ..####..
+..oooo.. ..####..
+..oGGo.. ..####..
+..GGGG.. ..####..
+..G..G.. ...##...
+..k..k.. ...###..
+
+= M medusa
+g.g..g.g ...##...
+.gggggg. ..####..
+.gssssg. ..####..
+.srssrs. ..####..
+.gssssg. ..####..
+..PPPP.. ..####..
+.PPPPPP. ..####..
+.PPPPPP. ..####..
+.PPPPPP. .######.
+PPPPPPPP .######.
+
+= N nymph
+..yyyy.. ..####..
+.yyyyyy. ..####..
+.yseesy. ..####..
+.yssssy. ..####..
+y.iiii.y ...##...
+..iiii.. ...##...
+..iiii.. ...##...
+.iiiiii. ..####..
+.iiiiii. ..####..
+..s..s.. ...##...
+
+= O orc
+.gggggg. ..####..
+.grggrg. ..####..
+.gggggg. ..####..
+.gwggwg. ..####..
+aaaaaaaa ..####..
+gaaaaaag ...##...
+g.aaaa.g ...##...
+..aaaa.. ..####..
+..a..a.. ...##...
+..N..N.. ...###..
+
+= P phantom
+..wwww.. ..####..
+.wwwwww. .######.
+.wkwwkw. .######.
+.wwwwww. .######.
+.wwkkww. .######.
+.wwwwww. .######.
+.wwwwww. ..####..
+.w.ww.w. ..####..
+........ ........
+
+= Q quagga
+.n....n. ......#.
+.nnnnnn. .....###
+.nknnkn. .....###
+.nnttnn. .....###
+..tttt.. .#######
+..tntn.. .#######
+..tttt.. .#######
+..t..t.. .#....#.
+..t..t.. .#....#.
+..k..k.. .#....#.
+
+= R rattlesnake
+...oo... ...##...
+..koko.. ..####..
+...oo... ...##...
+...oo... ...##...
+.oooooo. .######.
+oonoonoo ########
+.oooooo. .######.
+
+= S snake
+..gg.... .....##.
+.kggk... .....##.
+..gg.... .....##.
+..gg.... ....###.
+..gggggg .######.
+.gggyggg ########
+..gggggg .######.
+
+= T troll
+..gggg.. ..####..
+.gggggg. ..####..
+.gyggyg. ..####..
+.gggggg. ..####..
+..gkkg.. ..####..
+gggggggg .######.
+gggggggg .######.
+gggggggg .######.
+g.gggg.g ..####..
+g.gggg.g ..####..
+..nnnn.. ..####..
+..g..g.. ...##...
+..g..g.. ...##...
+
+= U black unicorn
+...w.... ......#.
+...w.... ......#.
+.a.w..a. ......#.
+.aaaaaa. .....###
+.araara. .....###
+.aaaaaa. .....###
+..aaaa.. .#######
+..aaaa.. .#######
+..aaaa.. .#######
+..a..a.. .#....#.
+..a..a.. .#....#.
+
+= V vampire
+..aaaa.. ..####..
+.awwwwa. ..####..
+.arwwra. ..####..
+..wwww.. ..####..
+a.RRRR.a ...##...
+aaaRRaaa ..####..
+aaaaaaaa ..####..
+aaaaaaaa ..####..
+.aaaaaa. ..####..
+.aa..aa. ...##...
+
+= W wraith
+..pppp.. ..####..
+.pppppp. .######.
+.pkkkkp. .######.
+.pykkyp. .######.
+.pppppp. .######.
+pppppppp .######.
+p.pppp.p ..####..
+..pppp.. ..####..
+.p.pp.p. ...##...
+........ ........
+
+= X xeroc
+.nnnnnn. .######.
+.nYYYYn. .######.
+.wkwwkw. .######.
+.rrrrrr. .######.
+.wwwwww. .######.
+.nnnnnn. .######.
+.nYnnYn. .######.
+
+= Y yeti
+..wwww.. ..####..
+.wwwwww. ..####..
+.wbwwbw. ..####..
+.wwwwww. ..####..
+wwwkkwww .######.
+wwwwwwww .######.
+wwwwwwww .######.
+w.wwww.w ..####..
+..wwww.. ..####..
+.ww..ww. ...##...
+.ww..ww. ...##...
+
+= Z zombie
+..aaaa.. ..####..
+.agggga. ..####..
+.gkggkg. ..####..
+.gggggg. ..####..
+..bbbb.. ..####..
+ggbbbbgg ..######
+..bbbb.. ..####..
+..bbbb.. ..####..
+..n..n.. ...##...
+..n..n.. ...##...

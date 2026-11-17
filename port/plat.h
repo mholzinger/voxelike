@@ -15,6 +15,7 @@ void rogue_start(void);
 void rogue_play(void);
 const unsigned char *rogue_screen(void);   /* the 80x24 screen's cells */
 int  rogue_under(int x, int y);            /* level character at a screen cell */
+int  rogue_room(int *bounds);              /* lit room the player is in, as x0 y0 x1 y1 */
 int  rogue_cursor_row(void);               /* 0 while Rogue waits on a prompt */
 void rogue_status(char *buf);              /* stats line, 40 columns */
 int  rogue_pack(int index, char *buf, int max);   /* "a) name"; returns the letter or 0 */

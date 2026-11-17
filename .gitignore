@@ -3,3 +3,4 @@
 rom/
 shots/
 .DS_Store
+sh_src/baked.h

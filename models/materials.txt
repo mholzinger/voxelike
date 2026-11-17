@@ -1,0 +1,35 @@
+# name      r  g  b   key
+# One line per material, in CRAM order (material 0 is the transparent void).
+# r g b are 0..31. key is the character that paints it in creatures.txt;
+# "-" means terrain only. At most 31 materials: each takes 8 shades of CRAM.
+STONE      15 16 20   A
+STONE2     19 20 24   S
+GROUT       9 10 13   a
+BRICKA     23 11  8   -
+BRICKB     18  9  7   -
+CAP        25 21 16   t
+WOOD       20 13  6   n
+DIRT       14 11  8   -
+DIRT2      11  9  7   -
+GOLD       31 26  6   Y
+STAIR      22 22 12   -
+SHADOW      4  3  6   k
+HAIR       21 10  3   h
+SKIN       31 23 17   s
+EYE         3  3  8   e
+TUNIC       8 25  8   G
+BELT       14  8  3   -
+BOOT       12  7  4   N
+STEEL      24 26 29   w
+PAPER      30 28 21   W
+POTION      6 14 31   b
+FOOD       22  5  5   R
+MAGIC      24  8 30   P
+RED        30  8  7   r
+PURPLE     16  7 22   p
+GREEN       5 15  7   g
+ORANGE     31 17  4   o
+CYAN        6 24 27   c
+YELLOW     30 29 10   y
+PINK       31 16 22   i
+ICE        20 28 31   I

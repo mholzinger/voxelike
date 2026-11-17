@@ -5,8 +5,9 @@ the spirit of 3D Dot Game Heroes.
 
 Status: playable. Rogue 5.4.4 runs unmodified behind the voxel renderer, with
 its messages, status, inventory, item prompts and tombstone on screen and every
-common command reachable from the pad. Not done: saving, high scores, naming
-items, restarting after death, and real monster models.
+common command reachable from the pad. The hero and all 26 monsters are voxel
+models, and the dungeon scrolls smoothly. Not done: saving, high scores, naming
+items, and restarting after death.
 
 ## Build
 
@@ -23,19 +24,37 @@ make deploy     # scp to a MiSTer (MISTER=root@host)
 ## How the renderer works
 
 - The level is Rogue's own 80x24 curses screen, held as a character grid in
-  RAM. `vox_load_screen` turns each character into a model: an 8x8 footprint
-  of voxel columns, up to 15 voxels tall. Monsters are their Rogue letters,
-  extruded.
+  RAM. `vox_load_screen` turns each character into terrain (an 8x8 footprint
+  of voxel columns, up to 15 tall) or a creature standing on terrain.
+- One voxel is 2x2 screen pixels. Horizontal doubling is a 16-bit write and
+  vertical doubling comes from the 32X line table.
+- The camera is a fixed oblique projection: voxel (x, y, z) lands on column
+  `x - cam_x`, row `(y - z) - cam_y`. Each column is walked front to back and
+  painted bottom to top, so every terrain pixel is written once.
+- Because the camera never turns, a creature always lands on the same pixels.
+  Creatures are baked into column sprites and stamped after the terrain, each
+  clipped by whatever terrain stands in front of it.
+- Each framebuffer keeps a rendered strip of the world: every row, and 312
+  columns that slide along the framebuffer like a tape. Moving the camera is a
+  line table rewrite plus the few columns that came into view. A change in the
+  dungeon repaints only the rows of the columns through the changed cells.
+- CRAM is `material * 8 + shade`. The hero's room is bright, what he can reach
+  in a passage is bright, everything remembered is dim.
 - A room's south wall is drawn two voxels tall so it cannot hide the floor
   behind it.
-- One voxel is 2x2 screen pixels. Horizontal doubling is a 16-bit write and
-  vertical doubling comes from the 32X line table, so the renderer only writes
-  a 160x112 image.
-- The camera is a fixed oblique projection: voxel (x, y, z) lands on column
-  `x - cam_x`, row `(y - cam_y) - z`. Each screen column is walked front to
-  back and painted bottom to top, so every pixel is written once.
-- CRAM is `material * 8 + shade`. Light is one shade value per cell.
-- The on-screen `R:` value is render time in FRT ticks (5.56 us each).
+
+## Creatures
+
+`models/creatures.txt` holds the hero and the 26 monsters as two ASCII
+drawings each, a front view in material keys and a side silhouette; a voxel
+exists where both agree. `models/materials.txt` is the palette.
+`tools/bake_models.py` turns them into `sh_src/baked.h` at build time, and
+
+```
+tools/bake_models.py --preview shots/creatures.png
+```
+
+draws every creature with the renderer's projection, no ROM needed.
 
 ## Controls
 
@@ -64,6 +83,8 @@ and its status line is rebuilt in a compact form from the same variables.
 - `make shot` writes the voxel picture after FRAMES frames.
 - `tools/screen.py --frames N --input keys.csv` prints Rogue's own 80x24 text
   screen from emulated RAM. Use it to tell a game bug from a render bug.
+- `tools/frametimes.py --frames N --input keys.csv` reports render time per
+  frame in FRT ticks (5.56 us each; a 60 fps frame has about 3000).
 - Input scripts are `frame,button,value` lines. Boot takes about 2 seconds, so
   press Start no earlier than frame 150.
 
