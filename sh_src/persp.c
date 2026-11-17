@@ -8,6 +8,7 @@ typedef int persp_unit;
 #include "voxel_world.h"
 #include "persp.h"
 #include "sh2zam/sh2zam.h"
+#include "baked3d.h"
 
 /* A voxel-space renderer. The world is solid columns on a grid, so each
  * screen column is one ray across the ground: step from grid line to grid
@@ -34,7 +35,7 @@ typedef int persp_unit;
 typedef char far_fits[(T_FAR >> INV_STEP) < INV_N ? 1 : -1];
 
 #define FB_PIXELS 0x100                    /* after the line table */
-#define MAX_BUMPS 16
+#define MAX_BUMPS 32
 
 #define NEVER     (INT32_MAX / 2)
 #define DETAIL    0xFF
@@ -43,24 +44,20 @@ static uint32_t inv_t[INV_N];              /* FOCAL / depth, Q16 */
 /* Depth, in Q12, at which a level surface h voxels up shows on each row. */
 static uint32_t plane_t[COL_MAXH + 1][VIEW_H];
 
-/* For an empty cell, how many more empty cells lie beyond it whichever way
- * a ray leaves: the ray may cross that many without looking. */
-static uint8_t clear_run[MAP_H][MAP_W];
-#define RUN_MAX 15
-static const vmodel_t *grid[MAP_H][MAP_W];
-static uint8_t flat[MAP_H][MAP_W];         /* a cell's one height, plinth and all, or DETAIL */
+#define RUN_MAX   15
 
 /* The colour on top of each column of a model, 64 bytes where the model
  * itself spreads them over a kilobyte. */
 static uint8_t tops[VOX_MODELS_MAX][CELL * CELL];
 
-/* All a ray needs to know about a cell, in one cache line. The arrays
- * above are where persp_sync works it out; the rays read only this. */
+/* All a ray needs to know about a cell, in one cache line. */
 typedef struct {
     const vmodel_t *m;
     const uint8_t *top;
-    uint8_t flat;          /* as flat[][] */
-    uint8_t light;         /* top-face shade; for an empty cell, its clear run */
+    uint8_t flat;          /* its one height, plinth and all, or DETAIL */
+    uint8_t light;         /* top-face shade. For an empty cell, how many
+                            * cells a ray can cross from here, whichever way
+                            * it goes, before it needs to look again */
     uint8_t lift;
     uint8_t plinth;
     uint8_t pad[4];
@@ -68,12 +65,21 @@ typedef struct {
 
 typedef char pcell_is_a_line[sizeof(pcell_t) == 16 ? 1 : -1];
 static pcell_t cells[MAP_H][MAP_W];
-static vmodel_t bump[MAX_BUMPS];           /* cells with a creature standing in them */
+
+/* A cell with a creature in it gets a model of its own: the terrain's, with
+ * the creature's voxel columns standing on it. */
+static vmodel_t bump[MAX_BUMPS];
+static struct { uint8_t cx, cy; } bumped[MAX_BUMPS];
+static int n_bumped;
+static uint8_t model_flat[VOX_MODELS_MAX];
+
+static unsigned flatness(const vmodel_t *m);
 
 void persp_init(void) {
     for (int i = 1; i < INV_N; i++) inv_t[i] = ((uint32_t)FOCAL << (16 + 16 - INV_STEP)) / (uint32_t)i;
     inv_t[0] = inv_t[1];
     for (int m = 0; m < vox_model_count; m++) {
+        model_flat[m] = (uint8_t)flatness(&vox_models[m]);
         for (int i = 0; i < CELL * CELL; i++) {
             const vcol_t *c = &vox_models[m].col[i >> 3][i & 7];
             tops[m][i] = c->h ? c->c[c->h - 1] : 0;
@@ -97,74 +103,121 @@ static unsigned flatness(const vmodel_t *m) {
     return h;
 }
 
-/* Until creatures are real 3D models, one is a block of its main colour
- * standing in the middle of its cell. */
+/* Make a cell what the terrain alone says it is. An empty cell's run is
+ * left for persp_sync to work out. */
+static void terrain(int cx, int cy) {
+    pcell_t *pc = &cells[cy][cx];
+    unsigned tile = vox_tile[cy][cx];
+    unsigned h = model_flat[tile];
+
+    pc->m = &vox_models[tile];
+    pc->top = tops[tile];
+    pc->flat = (uint8_t)(h == DETAIL ? DETAIL : h + vox_lift[cy][cx]);
+    pc->lift = vox_lift[cy][cx];
+    pc->plinth = vox_plinth[tile];
+    if (pc->flat) pc->light = vox_light[cy][cx];
+}
+
+static unsigned run_at(int cx, int cy) {
+    return cells[cy][cx].flat ? 0 : cells[cy][cx].light;
+}
+
 void persp_sync(void) {
-    int n = 0;
-
+    n_bumped = 0;
     for (int cy = 0; cy < MAP_H; cy++) {
-        for (int cx = 0; cx < MAP_W; cx++) {
-            unsigned h = flatness(&vox_models[vox_tile[cy][cx]]);
-            grid[cy][cx] = &vox_models[vox_tile[cy][cx]];
-            flat[cy][cx] = (uint8_t)(h == DETAIL ? DETAIL : h + vox_lift[cy][cx]);
-        }
-    }
-    for (int i = 0; n < MAX_BUMPS; i++) {
-        int cx, cy, kind;
-        if (!vox_creature(i, &cx, &cy, &kind)) break;
-
-        vmodel_t *m = &bump[n++];
-        *m = *grid[cy][cx];
-        for (int lx = 2; lx < 6; lx++) {
-            for (int ly = 2; ly < 6; ly++) {
-                vcol_t *c = &m->col[lx][ly];
-                for (int z = 0; z < 10 && c->h < COL_MAXH; z++) {
-                    c->c[c->h++] = vox_creature_colour(kind, z);
-                }
-            }
-        }
-        grid[cy][cx] = m;
-        flat[cy][cx] = DETAIL;
+        for (int cx = 0; cx < MAP_W; cx++) terrain(cx, cy);
     }
 
     /* Distance, in cells and counting diagonals as one, from each empty
-     * cell to the nearest that is not: two sweeps. Off the map counts as
-     * not empty, so a run never leaves it. */
+     * cell to the nearest that is not: two sweeps. The map's edge counts
+     * as not empty, so a run never leaves the map. */
     for (int cy = 0; cy < MAP_H; cy++) {
         for (int cx = 0; cx < MAP_W; cx++) {
+            if (cells[cy][cx].flat) continue;
             unsigned d = 0;
-            if (flat[cy][cx] == 0 && cx > 0 && cy > 0 && cx < MAP_W - 1) {
-                d = clear_run[cy][cx - 1];
-                if (clear_run[cy - 1][cx - 1] < d) d = clear_run[cy - 1][cx - 1];
-                if (clear_run[cy - 1][cx] < d) d = clear_run[cy - 1][cx];
-                if (clear_run[cy - 1][cx + 1] < d) d = clear_run[cy - 1][cx + 1];
-                if (d < RUN_MAX) d++;
+            if (cx > 0 && cy > 0 && cx < MAP_W - 1) {
+                d = run_at(cx - 1, cy);
+                if (run_at(cx - 1, cy - 1) < d) d = run_at(cx - 1, cy - 1);
+                if (run_at(cx, cy - 1) < d) d = run_at(cx, cy - 1);
+                if (run_at(cx + 1, cy - 1) < d) d = run_at(cx + 1, cy - 1);
             }
-            clear_run[cy][cx] = (uint8_t)d;
+            if (d < RUN_MAX) d++;
+            cells[cy][cx].light = (uint8_t)d;
         }
     }
     for (int cy = MAP_H - 1; cy >= 0; cy--) {
         for (int cx = MAP_W - 1; cx >= 0; cx--) {
-            unsigned d = clear_run[cy][cx];
-            if (d == 0) continue;
-            if (cy == MAP_H - 1 || cx == MAP_W - 1) { clear_run[cy][cx] = 1; continue; }
-            if (clear_run[cy][cx + 1] + 1u < d) d = clear_run[cy][cx + 1] + 1;
-            if (clear_run[cy + 1][cx + 1] + 1u < d) d = clear_run[cy + 1][cx + 1] + 1;
-            if (clear_run[cy + 1][cx] + 1u < d) d = clear_run[cy + 1][cx] + 1;
-            if (clear_run[cy + 1][cx - 1] + 1u < d) d = clear_run[cy + 1][cx - 1] + 1;
-            clear_run[cy][cx] = (uint8_t)d;
+            if (cells[cy][cx].flat) continue;
+            unsigned d = cells[cy][cx].light;
+            if (cy == MAP_H - 1 || cx == MAP_W - 1 || cx == 0) d = 1;
+            else {
+                if (run_at(cx + 1, cy) + 1 < d) d = run_at(cx + 1, cy) + 1;
+                if (run_at(cx + 1, cy + 1) + 1 < d) d = run_at(cx + 1, cy + 1) + 1;
+                if (run_at(cx, cy + 1) + 1 < d) d = run_at(cx, cy + 1) + 1;
+                if (run_at(cx - 1, cy + 1) + 1 < d) d = run_at(cx - 1, cy + 1) + 1;
+            }
+            cells[cy][cx].light = (uint8_t)d;
         }
     }
+    persp_creatures();
+}
 
-    for (int cy = 0; cy < MAP_H; cy++) {
-        for (int cx = 0; cx < MAP_W; cx++) {
-            pcell_t *pc = &cells[cy][cx];
-            pc->m = grid[cy][cx];
-            pc->top = tops[vox_tile[cy][cx]];
-            pc->flat = flat[cy][cx];
-            pc->light = flat[cy][cx] ? vox_light[cy][cx] : clear_run[cy][cx];
-            pc->lift = vox_lift[cy][cx];
-            pc->plinth = vox_plinth[vox_tile[cy][cx]];
+/* The cell's own copy of its model, to stand a creature on. 0 if the cell
+ * is not somewhere a creature stands (nothing, or a wall), or there are no
+ * copies left. */
+static vmodel_t *bump_for(int cx, int cy) {
+    if ((unsigned)cx >= MAP_W || (unsigned)cy >= MAP_H) return 0;
+    for (int i = 0; i < n_bumped; i++) {
+        if (bumped[i].cx == cx && bumped[i].cy == cy) return &bump[i];
+    }
+    unsigned h = model_flat[vox_tile[cy][cx]];
+    if (cells[cy][cx].flat == 0 || (h != DETAIL && h > 3) || n_bumped == MAX_BUMPS) return 0;
+
+    vmodel_t *m = &bump[n_bumped];
+    bumped[n_bumped].cx = (uint8_t)cx;
+    bumped[n_bumped].cy = (uint8_t)cy;
+    n_bumped++;
+    *m = vox_models[vox_tile[cy][cx]];
+    cells[cy][cx].m = m;
+    cells[cy][cx].flat = DETAIL;
+    return m;
+}
+
+/* Stand every creature where it is this frame. A creature is 8x8 columns
+ * of voxels, turned to face the way it last moved; walking between cells
+ * it stands partly on each. */
+void persp_creatures(void) {
+    vox_creature_t c;
+
+    while (n_bumped > 0) {
+        n_bumped--;
+        terrain(bumped[n_bumped].cx, bumped[n_bumped].cy);
+    }
+    for (int i = 0; vox_creature(i, &c); i++) {
+        for (int fx = 0; fx < CELL; fx++) {
+            for (int fy = 0; fy < CELL; fy++) {
+                /* The footprint, turned: its front is its y = 7 edge. */
+                const vcol_t *src;
+                switch (c.face) {
+                default: src = &ent_solid[c.kind][fx][fy]; break;
+                case 1:  src = &ent_solid[c.kind][fy][CELL - 1 - fx]; break;
+                case 2:  src = &ent_solid[c.kind][CELL - 1 - fx][CELL - 1 - fy]; break;
+                case 3:  src = &ent_solid[c.kind][CELL - 1 - fy][fx]; break;
+                }
+                if (!src->h) continue;
+
+                int wx = c.x + fx, wy = c.y + fy;
+                vmodel_t *m = bump_for(wx >> 3, wy >> 3);
+                if (!m) continue;
+                vcol_t *dst = &m->col[wx & 7][wy & 7];
+                /* A hop lifts it; what is under its feet reads as shadow. */
+                for (int z = 0; z < c.z && dst->h < COL_MAXH; z++) {
+                    dst->c[dst->h++] = src->c[0];
+                }
+                for (int z = 0; z < src->h && dst->h < COL_MAXH; z++) {
+                    dst->c[dst->h++] = c.flash ? (uint8_t)(c.flash & ~7) : src->c[z];
+                }
+            }
         }
     }
 }

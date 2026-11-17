@@ -173,6 +173,12 @@ sh_src/baked.h: models/materials.txt models/creatures.txt tools/bake_models.py
 
 sh_src/voxel.o: sh_src/baked.h
 
+sh_src/baked3d.h: models/materials.txt models/creatures.txt tools/bake_models.py
+	@echo "BAKE $@"
+	@python3 tools/bake_models.py --solid $@
+
+sh_src/persp.o: sh_src/baked3d.h
+
 # mars_start.s embeds the 68K program
 sh_src/mars_start.o: $(MDTARGET).bin
 

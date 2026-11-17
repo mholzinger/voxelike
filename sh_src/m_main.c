@@ -53,6 +53,8 @@ static uint32_t anim_tick;       /* vblank the animation has been run up to */
 __attribute__((used)) volatile uint16_t game_render_ticks;
 
 #ifdef PERSP
+uint16_t persp_yaw = 0xC000;
+
 /* For the HUD of a measuring build. */
 uint16_t perf_fps, perf_mean, perf_worst;
 #endif
@@ -117,11 +119,16 @@ void game_frame(void) {
 
 #ifdef PERSP
 	/* Prototype: X and Z swing the camera around the hero. */
-	static uint16_t yaw = 0xC000;
+	static int settle;
 	uint16_t pad = MARS_SYS_COMM8;
-	if(pad & SEGA_CTRL_X) yaw -= 0x200;
-	if(pad & SEGA_CTRL_Z) yaw += 0x200;
-	if(PERSP > 1) yaw += 0x100;   /* PERSP=2 turns by itself, for measuring */
+	if(pad & SEGA_CTRL_X) persp_yaw -= 0x200;
+	if(pad & SEGA_CTRL_Z) persp_yaw += 0x200;
+	if(PERSP > 1) persp_yaw += 0x100;   /* PERSP=2 turns by itself, for measuring */
+	uint16_t yaw = persp_yaw;
+
+	/* While anything moves, and for the frame it comes to rest. */
+	if(vox_moving || settle) persp_creatures();
+	settle = vox_moving;
 
 	uint16_t p0 = frt_read();
 	persp_render((uint16_t *)&MARS_FRAMEBUFFER, vox_hero_x + CELL / 2, vox_hero_y + CELL / 2, yaw);

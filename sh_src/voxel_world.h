@@ -14,10 +14,17 @@ extern uint8_t vox_plinth[];               /* plinth material, by model index */
 extern uint16_t vox_wtab[256];             /* CRAM index -> doubled pixel word */
 extern const uint8_t vox_front_shade[8];   /* shade of a side under a top's light */
 
-/* The i'th creature on screen: its cell and kind. 0 past the last one. */
-int vox_creature(int i, int *cx, int *cy, int *kind);
+/* A creature as it is this frame. */
+typedef struct {
+    int x, y;              /* top left voxel of its footprint */
+    int z;                 /* how far off the ground a hop has it */
+    uint8_t kind;          /* 0 the hero, 1..26 A..Z */
+    uint8_t face;          /* way it looks: 0 south, 1 west, 2 north, 3 east */
+    uint8_t flash;         /* CRAM index it is flashing, or 0 */
+} vox_creature_t;
 
-/* Material (CRAM base) of a creature kind at height z of a stand-in block. */
-uint8_t vox_creature_colour(int kind, int z);
+/* The i'th creature on screen. 0 past the last one. */
+int vox_creature(int i, vox_creature_t *c);
+
 
 #endif

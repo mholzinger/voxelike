@@ -38,6 +38,7 @@ extern int vox_hero_cx, vox_hero_cy;   /* where the last screen load found '@' *
 extern int vox_hero_x, vox_hero_y;     /* top left voxel of the hero right now */
 extern int vox_hero_busy;              /* the hero is still walking or lunging */
 extern int vox_hero_jumped;            /* set when the hero moved without walking */
+extern int vox_moving;                 /* something walked, lunged or flashed this frame */
 
 /* The level's own character at a cell, whatever stands on it. */
 typedef int (*vox_under_fn)(int cx, int cy);

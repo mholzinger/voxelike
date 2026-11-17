@@ -32,6 +32,7 @@ uint8_t vox_light[MAP_H][MAP_W];   /* top-face shade 0..7 */
 int vox_hero_cx, vox_hero_cy;
 int vox_hero_x, vox_hero_y;
 int vox_hero_busy, vox_hero_jumped;
+int vox_moving;
 
 /* --- Creatures --------------------------------------------------------
  * Rogue moves a creature a whole cell at a time. Here each one has a
@@ -59,6 +60,7 @@ typedef struct {
     int8_t ldx, ldy;      /* which way it lunges */
     int8_t ox, oy, z;     /* lunge offset and hop height, now */
     uint8_t seen;
+    uint8_t face;         /* way it looks: 0 south, 1 west, 2 north, 3 east */
     uint8_t wait;         /* frames until the lunge starts */
     uint8_t flash_wait;   /* frames until the flash starts */
     uint8_t flash;        /* frames of flash left */
@@ -79,6 +81,15 @@ typedef struct {
 static part_t parts[MAX_PARTS];
 static int n_parts;
 static int last_depth;
+
+#define FLASH_HERO   (MAT(MT_RED) + 7)
+#define FLASH_OTHER  (MAT(MT_PAPER) + 7)
+
+/* Which way a step of (dx, dy) looks. */
+static uint8_t facing(int dx, int dy) {
+    if (abs(dx) > abs(dy)) return dx > 0 ? 3 : 1;
+    return dy > 0 ? 0 : 2;
+}
 
 static const int8_t hop_z[8] = { 0, 1, 2, 2, 2, 2, 1, 1 };
 static const int8_t lunge_reach[LUNGE + 1] = { 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 2 };
@@ -351,6 +362,7 @@ static void ent_place(uint32_t id, int kind, int cx, int cy, int frames) {
             stale_ent(e);
         }
         if (dx == 0 && dy == 0) return;
+        e->face = facing(tx - e->tx, ty - e->ty);
         e->tx = (int16_t)tx;
         e->ty = (int16_t)ty;
         if (frames > 0 && dx <= SLIDE_MAX * CELL && dy <= SLIDE_MAX * CELL) {
@@ -461,9 +473,11 @@ static void hero_follow(void) {
 }
 
 void vox_animate(void) {
+    vox_moving = 0;
     for (int i = 0; i < n_ents; i++) {
         ent_t *e = &ents[i];
         if (!e->left && !e->lunge && !e->flash) continue;
+        vox_moving = 1;
 
         stale_ent(e);
         if (e->left) {
@@ -499,37 +513,21 @@ void vox_jab(uint32_t id) {
     e->ldy = (int8_t)((hero->ty > e->ty) - (hero->ty < e->ty));
     e->lunge = LUNGE;
     e->wait = JAB_WAIT;
+    if (e->ldx || e->ldy) e->face = facing(e->ldx, e->ldy);
     /* If the hero was just hurt, this is the blow that did it. */
     if (hero->flash) hero->flash_wait = JAB_WAIT + 2;
 }
 
-int vox_creature(int i, int *cx, int *cy, int *kind) {
+int vox_creature(int i, vox_creature_t *c) {
     if (i >= n_ents) return 0;
-    *cx = ents[i].tx / CELL;
-    *cy = ents[i].ty / CELL;
-    *kind = ents[i].kind;
+    const ent_t *e = &ents[i];
+    c->x = e->x + e->ox;
+    c->y = e->y + e->oy;
+    c->z = e->z;
+    c->kind = e->kind;
+    c->face = e->face;
+    c->flash = (e->flash && !e->flash_wait) ? (e->id == HERO_ID ? FLASH_HERO : FLASH_OTHER) : 0;
     return 1;
-}
-
-/* The hero is known; anything else is the material its sprite uses most. */
-uint8_t vox_creature_colour(int kind, int z) {
-    static const uint8_t hero[10] = {
-        MAT(MT_BOOT), MAT(MT_BOOT), MAT(MT_TUNIC), MAT(MT_TUNIC), MAT(MT_BELT),
-        MAT(MT_TUNIC), MAT(MT_TUNIC), MAT(MT_SKIN), MAT(MT_SKIN), MAT(MT_HAIR),
-    };
-    static uint8_t main_mat[N_ENTS];
-
-    if (kind == 0) return hero[z];
-    if (!main_mat[kind]) {
-        uint8_t count[MT_COUNT] = { 0 };
-        int best = 1;
-        for (int lx = 0; lx < CELL; lx++) {
-            for (int k = 0; k < ENT_ROWS; k++) count[ent_sprite[kind][lx][k] >> 3]++;
-        }
-        for (int m = 1; m < MT_COUNT; m++) if (count[m] > count[best]) best = m;
-        main_mat[kind] = (uint8_t)MAT(best);
-    }
-    return main_mat[kind];
 }
 
 void vox_hero_lunge(int dx, int dy) {
@@ -538,6 +536,7 @@ void vox_hero_lunge(int dx, int dy) {
         ents[i].lunge = LUNGE;
         ents[i].ldx = (int8_t)dx;
         ents[i].ldy = (int8_t)dy;
+        ents[i].face = facing(dx, dy);
         vox_hero_busy = 1;
     }
 }
@@ -668,8 +667,6 @@ void vox_init(void) {
     } while (0)
 
 #define MAX_COL_ENTS 16  /* creatures and pieces one screen column can hold */
-#define FLASH_HERO   (MAT(MT_RED) + 7)
-#define FLASH_OTHER  (MAT(MT_PAPER) + 7)
 #define ENT_REACH    (ENT_ORIGIN + HOP_MAX + LIFT_MAX)
 
 /* Draw canvas rows ra..rb of world column X into a framebuffer's tape.

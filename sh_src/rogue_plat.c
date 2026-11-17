@@ -98,6 +98,27 @@ static void wait_any(void (*frame)(void), int frames) {
 	}
 }
 
+#ifdef PERSP
+/* Up on the pad means away from the camera, wherever that points on the
+ * map: turn the pad's direction by the camera's, to the nearest eighth. */
+static uint16_t camera_dir(uint16_t dir) {
+	static const uint16_t ring[8] = {
+		SEGA_CTRL_UP, SEGA_CTRL_UP | SEGA_CTRL_RIGHT, SEGA_CTRL_RIGHT,
+		SEGA_CTRL_DOWN | SEGA_CTRL_RIGHT, SEGA_CTRL_DOWN, SEGA_CTRL_DOWN | SEGA_CTRL_LEFT,
+		SEGA_CTRL_LEFT, SEGA_CTRL_UP | SEGA_CTRL_LEFT,
+	};
+	extern uint16_t persp_yaw;
+	unsigned turn = ((uint16_t)(persp_yaw - 0xC000 + 0x1000) >> 13) & 7;
+
+	for(int i = 0; i < 8; i++) {
+		if(ring[i] == dir) return ring[(i + turn) & 7];
+	}
+	return dir;
+}
+#else
+#define camera_dir(dir) (dir)
+#endif
+
 /* Rogue's vi keys for the pad's eight directions. */
 static int dir_key(uint16_t dir) {
 	switch(dir) {
@@ -347,7 +368,7 @@ static int prompt_key(void) {
 	/* A direction, or a yes or no: A is yes, C is no, B backs out. */
 	for(;;) {
 		input_t in = poll(game_frame);
-		if(in.dir) return dir_key(in.dir);
+		if(in.dir) return dir_key(camera_dir(in.dir));
 		if(in.pressed & SEGA_CTRL_A) return 'y';
 		if(in.pressed & SEGA_CTRL_C) return 'n';
 		if(in.pressed & (SEGA_CTRL_B | SEGA_CTRL_START)) return ESCAPE;
@@ -359,11 +380,12 @@ static int step_cx, step_cy;     /* ...from this cell */
 
 /* The hero is about to step one cell. If a monster is in the way the step
  * is a blow, and the hero jabs at it. */
-static int step_key(uint16_t dir) {
+static int step_key(uint16_t pad_dir) {
+	uint16_t dir = camera_dir(pad_dir);
 	int dx = ((dir & SEGA_CTRL_RIGHT) != 0) - ((dir & SEGA_CTRL_LEFT) != 0);
 	int dy = ((dir & SEGA_CTRL_DOWN) != 0) - ((dir & SEGA_CTRL_UP) != 0);
 
-	step_dir = dir;
+	step_dir = pad_dir;
 	step_cx = vox_hero_cx;
 	step_cy = vox_hero_cy;
 	if(rogue_who(vox_hero_cx + dx, vox_hero_cy + dy)) {

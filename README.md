@@ -98,7 +98,7 @@ Hold X or Z to swing it. `PERSP=2` turns it by itself, for measuring. Plain
 - Each cell's facts sit in one 16 byte record, a cache line, and a floor's
   colours in 64 bytes: on hardware the SH-2's 4K cache decides the speed.
 - Measured in ares over three dungeon levels played by the bot
-  (`make BOT=1 PERSP=2`): a frame takes 3311 ticks at the median and 4744 at
+  (`make BOT=1 PERSP=2`): a frame takes 3395 ticks at the median and 4941 at
   worst, inside the 6000 that 30 frames a second allows. One SH-2 and no
   shortcuts gave 5 frames a second; whole-cell steps 16; the second SH-2 28;
   empty runs and cheaper pixel math 30 and up. ares counts instructions and
@@ -107,9 +107,16 @@ Hold X or Z to swing it. `PERSP=2` turns it by itself, for measuring. Plain
   MiSTer that needs no pad: it starts itself, the bot plays, the camera
   turns, and a yellow line reads `FPS`, `MEAN` and `WORST` (FRT ticks to
   draw a frame; 3000 is one vblank). Not run on hardware yet.
-- Prototype limits: creatures are plain blocks that jump from cell to cell,
-  the D-pad still moves in map directions whatever way the camera faces, and
-  far floor shimmers.
+- Creatures are real voxel models here: `tools/bake_models.py --solid` turns
+  the same two drawings into 8x8 columns of voxels, and the renderer stands
+  them on the cells they are over, turned to face the way they last moved,
+  mid-step and mid-hop included. A flash colours the whole model.
+- Up on the D-pad is away from the camera: the pad's direction is turned by
+  the camera's, to the nearest eighth of a circle.
+- Prototype limits: a creature is solid from the ground up (a gap under a
+  belly is shadow, and fliers stand on the floor), its back is drawn without
+  a face but otherwise from the front view, the dead vanish with no burst of
+  voxels, and far floor shimmers. The build uses 225K of the 256K of RAM.
 
 ## Combat on screen
 
