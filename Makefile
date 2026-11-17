@@ -85,7 +85,7 @@ $(PERSPSTAMP):
 	@rm -f $(ROMDIR)/.persp-*
 	@touch $@
 port/bot.o sh_src/rogue_plat.o: $(BOTSTAMP)
-sh_src/m_main.o sh_src/persp.o: $(PERSPSTAMP)
+sh_src/m_main.o sh_src/persp.o sh_src/s_main.o: $(PERSPSTAMP)
 
 # SH2ZAM fixed-point math (vendored subset, MIT): its own dialect.
 SH2ZDIR  = third_party/SH2ZAM

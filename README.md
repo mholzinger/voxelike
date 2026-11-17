@@ -88,14 +88,22 @@ Hold X or Z to swing it. `PERSP=2` turns it by itself, for measuring. Plain
 
 - It is a voxel-space renderer: one ray per screen column across the ground,
   nearest first. A cell that is one height all over (nothing, floor, wall) is
-  settled in one step; other cells are walked voxel by voxel.
+  settled in one step, a run of empty cells in one more, and only the rest
+  are walked voxel by voxel.
+- Both SH-2s draw: the primary the even columns, the secondary the odd ones,
+  started through COMM6. The secondary purges its cache first, because it
+  has not seen what the primary wrote to the world.
 - The camera basis and per-column reciprocals come from SH2ZAM
   (`third_party/SH2ZAM`, MIT, a vendored subset).
-- Measured in ares, one SH-2: about 16 frames a second in a lit room. ares
-  counts instructions and not memory waits, so hardware will differ.
+- Measured in ares over three dungeon levels played by the bot
+  (`make BOT=1 PERSP=2`): a frame takes 3549 ticks at the median and 5605 at
+  worst, inside the 6000 that 30 frames a second allows. One SH-2 and no
+  shortcuts gave 5 frames a second; whole-cell steps 16; the second SH-2 28;
+  empty runs and cheaper pixel math 30 and up. ares counts instructions and
+  not memory waits, so hardware will differ.
 - Prototype limits: creatures are plain blocks that jump from cell to cell,
-  the D-pad still moves in map directions whatever way the camera faces, far
-  floor shimmers, and the second SH-2 is not used yet.
+  the D-pad still moves in map directions whatever way the camera faces, and
+  far floor shimmers.
 
 ## Combat on screen
 

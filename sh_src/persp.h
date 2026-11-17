@@ -14,4 +14,7 @@ void persp_sync(void);
  * circles, yaw the direction it looks in sh2zam turns (0xC000 is north). */
 void persp_render(uint16_t *fb, int x, int y, uint16_t yaw);
 
+/* The secondary SH-2's side of a frame: wait to be asked, draw its share. */
+void persp_secondary(void);
+
 #endif
