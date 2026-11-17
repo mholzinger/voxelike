@@ -66,7 +66,7 @@ static uint32_t who(int cx, int cy) { return rogue_who(cx, cy); }
 static int alive(uint32_t id)       { return rogue_alive(id); }
 static int hp(uint32_t id)          { return rogue_hp(id); }
 
-static const vox_source_t source = { rogue_under, who, alive, hp };
+static const vox_source_t source = { rogue_under, who, alive, hp, rogue_ground };
 
 /* One step of the dungeon display, one vblank long when it keeps up: fold
  * in Rogue's latest screen, move the camera toward the hero, bring the

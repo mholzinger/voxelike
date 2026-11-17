@@ -283,6 +283,48 @@ rogue_depth(void)
 }
 
 /*
+ * room_height:
+ *	Rooms stand on plinths 2 to 4 voxels high, chosen so the rooms of
+ *	a level differ and so do the levels. 0 if the cell is in no room.
+ */
+static int
+room_height(int x, int y)
+{
+    struct room *rp;
+
+    for (rp = rooms; rp < &rooms[MAXROOMS]; rp++)
+    {
+	if (rp->r_flags & (ISGONE | ISMAZE))
+	    continue;
+	if (x >= rp->r_pos.x && x < rp->r_pos.x + rp->r_max.x
+	    && y >= rp->r_pos.y && y < rp->r_pos.y + rp->r_max.y)
+		return 2 + ((int) (rp - rooms) * 5 + level) % 3;
+    }
+    return 0;
+}
+
+/*
+ * rogue_ground:
+ *	How high the ground of a cell stands. Passages run at ground level
+ *	and step up halfway where they meet a room's door.
+ */
+int
+rogue_ground(int x, int y)
+{
+    int h, n;
+
+    if (x < 0 || x >= NUMCOLS || y < 1 || y >= NUMLINES - 1)
+	return 0;
+    if ((h = room_height(x, y)) != 0)
+	return h;
+    h = room_height(x - 1, y);
+    if ((n = room_height(x + 1, y)) > h) h = n;
+    if ((n = room_height(x, y - 1)) > h) h = n;
+    if ((n = room_height(x, y + 1)) > h) h = n;
+    return h / 2;
+}
+
+/*
  * attack:
  *	The linker sends chase.c's calls to attack() here first, so the
  *	machine can show who struck at the player. Rogue's own attack()

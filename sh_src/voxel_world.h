@@ -7,6 +7,8 @@
 extern vmodel_t vox_models[];
 extern uint8_t vox_tile[MAP_H][MAP_W];     /* index into vox_models */
 extern uint8_t vox_light[MAP_H][MAP_W];    /* top-face shade 0..7 */
+extern uint8_t vox_lift[MAP_H][MAP_W];     /* voxels of plinth under the model */
+extern uint8_t vox_plinth[];               /* plinth material, by model index */
 extern uint16_t vox_wtab[256];             /* CRAM index -> doubled pixel word */
 extern const uint8_t vox_front_shade[8];   /* shade of a side under a top's light */
 

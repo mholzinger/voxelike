@@ -43,7 +43,7 @@ static uint32_t inv_t[INV_N];              /* FOCAL / depth, Q16 */
 /* Depth, in Q6, at which a level surface h voxels up shows on each row. */
 static uint16_t plane_t[COL_MAXH + 1][VIEW_H];
 static const vmodel_t *grid[MAP_H][MAP_W];
-static uint8_t flat[MAP_H][MAP_W];         /* a cell's one height, or DETAIL */
+static uint8_t flat[MAP_H][MAP_W];         /* a cell's one height, plinth and all, or DETAIL */
 static vmodel_t bump[MAX_BUMPS];           /* cells with a creature standing in them */
 
 void persp_init(void) {
@@ -74,8 +74,9 @@ void persp_sync(void) {
 
     for (int cy = 0; cy < MAP_H; cy++) {
         for (int cx = 0; cx < MAP_W; cx++) {
+            unsigned h = flatness(&vox_models[vox_tile[cy][cx]]);
             grid[cy][cx] = &vox_models[vox_tile[cy][cx]];
-            flat[cy][cx] = (uint8_t)flatness(grid[cy][cx]);
+            flat[cy][cx] = (uint8_t)(h == DETAIL ? DETAIL : h + vox_lift[cy][cx]);
         }
     }
     for (int i = 0; n < MAX_BUMPS; i++) {
@@ -129,12 +130,15 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
         int32_t t_out = x_next ? tcx : tcy;
         if (t_out > T_FAR) t_out = T_FAR;
 
-        unsigned kind = 0, st = 0;
+        unsigned kind = 0, st = 0, plinth = 0;
+        int lift = 0;                      /* the cell's model stands this high */
         const vmodel_t *m = 0;
         if ((unsigned)cx < MAP_W && (unsigned)cy < MAP_H) {
             kind = flat[cy][cx];
             m = grid[cy][cx];
             st = vox_light[cy][cx];
+            lift = vox_lift[cy][cx];
+            plinth = vox_plinth[vox_tile[cy][cx]];
         }
 
         if (kind == 0) {
@@ -171,7 +175,7 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                         int zi = z >> 16;
                         if (zi < 0) zi = 0;
                         if (zi >= h) zi = h - 1;
-                        *dst = vox_wtab[c[zi] + sf];
+                        *dst = vox_wtab[(zi < lift ? plinth : c[zi - lift]) + sf];
                         dst -= VIEW_W;
                         z += zstep;
                     }
@@ -190,7 +194,7 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                     int32_t t = *pt--;
                     int wx = (ex + ((dx * t) >> 6)) >> 16;
                     int wy = (ey + ((dy * t) >> 6)) >> 16;
-                    *dst = vox_wtab[m->col[wx & 7][wy & 7].c[h - 1] + st];
+                    *dst = vox_wtab[m->col[wx & 7][wy & 7].c[h - lift - 1] + st];
                     dst -= VIEW_W;
                 }
                 ybuf = top;
@@ -215,7 +219,7 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
 
             for (;;) {
                 const vcol_t *col = &m->col[ix & 7][iy & 7];
-                int h = col->h;
+                int h = col->h + lift;
 
                 /* The side that faces the eye, where the ray came in. */
                 if (h > prev_h) {
@@ -230,7 +234,7 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                             int zi = z >> 16;
                             if (zi < 0) zi = 0;
                             if (zi >= h) zi = h - 1;
-                            *dst = vox_wtab[col->c[zi] + sf];
+                            *dst = vox_wtab[(zi < lift ? plinth : col->c[zi - lift]) + sf];
                             dst -= VIEW_W;
                             z += zstep;
                         }
@@ -248,7 +252,8 @@ static void ray(uint16_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                     int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> 16);
                     if (top < 0) top = 0;
                     if (top < ybuf) {
-                        uint16_t w = h ? vox_wtab[col->c[h - 1] + st] : 0;
+                        uint16_t w = col->h ? vox_wtab[col->c[col->h - 1] + st]
+                                            : (h ? vox_wtab[plinth + st] : 0);
                         for (int n = ybuf - top; n > 0; n--) {
                             *dst = w;
                             dst -= VIEW_W;

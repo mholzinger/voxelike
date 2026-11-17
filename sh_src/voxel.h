@@ -13,6 +13,7 @@
 #define VIEW_W     160
 #define VIEW_H     112
 #define COL_MAXH   15
+#define LIFT_MAX   4       /* tallest plinth; the tallest model on one must fit COL_MAXH */
 
 /* The camera is the world position of the view's top left fat pixel. A voxel
  * at (x, y, z) shows at column x - cam_x, row (y - z) - cam_y. */
@@ -51,6 +52,7 @@ typedef struct {
     vox_who_fn who;
     int (*alive)(uint32_t id);   /* is this creature still in the level */
     int (*hp)(uint32_t id);      /* hit points of a living creature, 1 for the hero */
+    int (*ground)(int cx, int cy);   /* how high the cell's ground stands, in voxels */
 } vox_source_t;
 
 void vox_init(void);

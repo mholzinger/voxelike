@@ -24,6 +24,7 @@ uint16_t vox_wtab[256];              /* CRAM index -> doubled pixel word */
 
 /* The world as last loaded, one entry per Rogue screen cell. */
 uint8_t vox_tile[MAP_H][MAP_W];    /* terrain model */
+uint8_t vox_lift[MAP_H][MAP_W];    /* voxels of plinth under the cell's model */
 uint8_t vox_light[MAP_H][MAP_W];   /* top-face shade 0..7 */
 
 int vox_hero_cx, vox_hero_cy;
@@ -83,6 +84,13 @@ static const int8_t lunge_reach[LUNGE + 1] = { 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 
 #define LIGHT_BRIGHT  7    /* the hero's room, and right around the hero */
 #define LIGHT_NEAR    5
 #define LIGHT_DIM     3    /* seen before, not in view now */
+#define LIGHT_MEMORY  2    /* seen before, and Rogue has stopped showing it */
+
+/* How high the ground of each cell stands, from the game, taken in once per
+ * level. Rooms stand on plinths of different heights and passages run
+ * between them at ground level. */
+static uint8_t ground[MAP_H][MAP_W];
+#define STAIR_DROP  2      /* the stairs' cell is this much lower than its room */
 
 /* A front face is darker than the top face lit by the same light. */
 const uint8_t vox_front_shade[N_SHADES] = { 0, 0, 1, 2, 2, 3, 4, 5 };
@@ -184,8 +192,10 @@ static void build_models(void) {
             if (ly == 0) col_set(dv, 10, MAT(MT_CAP));
             if (ly == CELL - 1) col_set(dv, 3, MAT(MT_CAP));
 
+            /* Steps going down to the right, from the level of the floor
+             * around them into the pit their cell is sunk into. */
             int step = lx >> 1;
-            col_set(&vox_models[M_STAIRS].col[lx][ly], 1 + step,
+            col_set(&vox_models[M_STAIRS].col[lx][ly], STAIR_DROP + 1 - step,
                     (step & 1) ? MAT(MT_STAIR) : MAT(MT_CAP));
         }
     }
@@ -232,7 +242,13 @@ static void build_models(void) {
     stack(&vox_models[M_AMULET], 3, 4, 3, 4, 1, MAT(MT_RED));
 
     stack(&vox_models[M_MAGIC], 3, 4, 3, 4, 3, MAT(MT_MAGIC));
+
+    for (int m = 0; m < M_COUNT; m++) vox_plinth[m] = MAT(MT_BRICKB);
+    vox_plinth[M_STAIRS] = MAT(MT_SHADOW);
 }
+
+/* What a cell's plinth is made of, by the model that stands on it. */
+uint8_t vox_plinth[M_COUNT];
 
 static int is_wall(int ch) {
     return ch == '-' || ch == '|';
@@ -301,11 +317,18 @@ static void stale_cell(int cx, int cy) {
     stale(cx * CELL, cx * CELL + CELL - 1, near - (CELL - 1) - COL_MAXH, near);
 }
 
-/* The patch of canvas a creature covers where it stands right now. */
+/* How high the ground is under the middle of a footprint at (x, y). */
+static int lift_under(int x, int y) {
+    return vox_lift[(y + CELL / 2) >> 3][(x + CELL / 2) >> 3];
+}
+
+/* The patch of canvas a creature covers where it stands right now. A cell
+ * that changes height stales itself, and the creature is redrawn with it,
+ * so the tallest ground is allowed for here. */
 static void stale_ent(const ent_t *e) {
     int x = e->x + e->ox;
     int r = e->y + e->oy - ROW_MIN;
-    stale(x, x + CELL - 1, r - ENT_ORIGIN - e->z, r + CELL - 1);
+    stale(x, x + CELL - 1, r - ENT_ORIGIN - e->z - LIFT_MAX, r + CELL - 1);
 }
 
 /* Rogue shows a creature at a cell. If it is one already known and the cell
@@ -383,6 +406,7 @@ static void shatter(const ent_t *e) {
              * the footprint at the height that puts it on the same row. */
             int y = ey + CELL / 2, z = CELL / 2 + ENT_ORIGIN - k;
             if (z < 0) { y -= z; z = 0; }
+            z += lift_under(ex, ey);
 
             part_t *p = &parts[n_parts++];
             p->x = (int16_t)((ex + lx) << 4);
@@ -402,21 +426,21 @@ static void parts_animate(void) {
     for (int i = 0; i < n_parts; ) {
         part_t *p = &parts[i];
         stale_part(p);
-        if (p->z > 0 || p->vz > 0) {
+        if (p->life > PART_REST) {
             p->x += p->vx;
             p->y += p->vy;
             p->z += p->vz;
             p->vz -= GRAVITY;
-            if (p->z <= 0) {
-                p->z = 0;
-                p->vz = 0;
-                if (p->life > PART_REST) p->life = PART_REST;
-            }
         }
         if (--p->life == 0 || p->x < 0 || p->x >= (MAP_W * CELL) << 4 ||
             p->y < CELL << 4 || p->y >= ((MAP_H - 1) * CELL) << 4) {
             *p = parts[--n_parts];
             continue;
+        }
+        int floor = vox_lift[p->y >> 7][p->x >> 7] << 4;
+        if (p->z <= floor && p->vz <= 0) {
+            p->z = (int16_t)floor;
+            if (p->life > PART_REST) p->life = PART_REST;
         }
         stale_part(p);
         i++;
@@ -524,7 +548,15 @@ void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
     int same_level = (depth == last_depth);
 
     last_depth = depth;
-    if (!same_level) frames = 0;
+    if (!same_level) {
+        frames = 0;
+        for (int cy = 1; cy < MAP_H - 1; cy++) {
+            for (int cx = 0; cx < MAP_W; cx++) {
+                int g = src->ground(cx, cy);
+                ground[cy][cx] = (uint8_t)(g > LIFT_MAX ? LIFT_MAX : g);
+            }
+        }
+    }
     for (int i = 0; i < n_ents; i++) ents[i].seen = 0;
 
     for (int i = MAP_W; i < (MAP_H - 1) * MAP_W; i++) {
@@ -551,9 +583,21 @@ void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                 else if (d == 2) light = LIGHT_NEAR;
             }
 
-            if (tile != vox_tile[cy][cx] || light != vox_light[cy][cx]) {
+            /* Rogue forgets the floor of a dark room as soon as the hero
+             * steps away. The hero does not: what was there stays, dimmer. */
+            if (tile == M_VOID && same_level && vox_tile[cy][cx] != M_VOID) {
+                tile = vox_tile[cy][cx];
+                if (light < LIGHT_NEAR) light = LIGHT_MEMORY;
+            }
+
+            int lift = tile == M_VOID ? 0 : ground[cy][cx];
+            if (tile == M_STAIRS) lift = lift > STAIR_DROP ? lift - STAIR_DROP : 0;
+
+            if (tile != vox_tile[cy][cx] || light != vox_light[cy][cx] ||
+                lift != vox_lift[cy][cx]) {
                 vox_tile[cy][cx] = tile;
                 vox_light[cy][cx] = light;
+                vox_lift[cy][cx] = (uint8_t)lift;
                 stale_cell(cx, cy);
             }
 
@@ -624,7 +668,7 @@ void vox_init(void) {
 #define MAX_COL_ENTS 16  /* creatures and pieces one screen column can hold */
 #define FLASH_HERO   (MAT(MT_RED) + 7)
 #define FLASH_OTHER  (MAT(MT_PAPER) + 7)
-#define ENT_REACH    (ENT_ORIGIN + HOP_MAX)
+#define ENT_REACH    (ENT_ORIGIN + HOP_MAX + LIFT_MAX)
 
 /* Draw canvas rows ra..rb of world column X into a framebuffer's tape.
  *
@@ -660,7 +704,7 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
         unsigned st = vox_light[(ey + CELL / 2) >> 3][(ex + CELL / 2) >> 3];
         in[k].rows = ent_sprite[e->kind][X - ex];
         in[k].near = (int16_t)(ey + CELL - 1);
-        in[k].row0 = (int16_t)(ey - ROW_MIN - ENT_ORIGIN - e->z);
+        in[k].row0 = (int16_t)(ey - ROW_MIN - ENT_ORIGIN - e->z - lift_under(ex, ey));
         in[k].st = (uint8_t)st;
         in[k].sf = vox_front_shade[st];
         in[k].n = ENT_ROWS;
@@ -702,20 +746,28 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
         unsigned st = vox_light[cy][cx];
         unsigned sf = vox_front_shade[st];
 
+        /* The cell's model stands on a plinth `lift` voxels high. */
+        int lift = vox_lift[cy][cx];
+        unsigned plinth = vox_plinth[vox_tile[cy][cx]];
+        uint16_t plinth_side = vox_wtab[plinth + sf];
+
         do {
             while (vy == next) {
                 in[noted++].clip = (int16_t)limit;
                 next = noted < n_in ? in[noted].near : -1;
             }
-            int h = col->h;
+            int h = col->h + lift;
             int top = r - h;
             if (top < limit) {
                 int stop = top < 0 ? -1 : top;
                 int n = limit - 1 - stop;
                 int z = r - (limit - 1);
-                while (n-- > 0) PUT(vox_wtab[col->c[z++] + sf]);
+                for (; n > 0; n--, z++) {
+                    PUT(z < lift ? plinth_side : vox_wtab[col->c[z - lift] + sf]);
+                }
                 if (top < 0) { limit = 0; break; }
-                PUT(h ? vox_wtab[col->c[h - 1] + st] : 0);
+                PUT(col->h ? vox_wtab[col->c[col->h - 1] + st]
+                           : (h ? vox_wtab[plinth + st] : 0));
                 limit = top;
             }
             col--; r--; vy--;

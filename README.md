@@ -62,6 +62,23 @@ tools/bake_models.py --preview shots/creatures.png
 
 draws every creature with the renderer's projection, no ROM needed.
 
+## Living heights
+
+Rogue's map is flat. The renderer is not obliged to be:
+
+- Every room stands on a brick plinth 2 to 4 voxels high, a different height
+  from its neighbours (`rogue_ground` in `port/rogue_port.c` decides, from
+  the room's number and the dungeon level). Passages run at ground level and
+  step up halfway where they meet a door.
+- The stairs' cell is sunk two voxels below its room, so the way down is a
+  pit with steps into it.
+- Rogue stops showing the floor of a dark room the moment the hero steps
+  off it. The renderer keeps what was seen and draws it dimmer, so a dark
+  room is explored and stays explored.
+
+Creatures and falling pieces stand on whatever ground is under them. Both
+renderers draw the plinths.
+
 ## Perspective prototype
 
 `make PERSP=1` builds the same game with a second renderer, `sh_src/persp.c`,
