@@ -104,10 +104,14 @@ static int flat_wanted;
  * the hero is getting somewhere, the camera stays as it is, however many
  * doors he goes through: it moves when the pad is let go, or when he has
  * walked as far as that direction will take him (the passage turns, there
- * is a wall) and has stood against it for STUCK vblanks. Then it looks at
- * where he has ended up and takes its view from that. Turning it by hand
- * holds all this off for HANDS_OFF vblanks. */
+ * is a wall) and has stood against it for STUCK vblanks. Letting go for
+ * less than TAP_GAP is not letting go: that is walking by taps. Then it
+ * looks at where he has ended up and takes its view from that. Turning it
+ * by hand holds all this off for HANDS_OFF vblanks.
+ *
+ * What up means is kept steadier still: see pad_turn_latch(). */
 #define STUCK         24
+#define TAP_GAP       20
 #define THREE_QUARTER 0x2000
 #define HANDS_OFF     180
 #define TALL          5      /* voxels over the hero's floor that hide him */
@@ -212,8 +216,12 @@ static void camera_buttons(void) {
 		if(vox_hero_cx != at_cx || vox_hero_cy != at_cy || vox_hero_busy) moved_at = now;
 		at_cx = vox_hero_cx;
 		at_cy = vox_hero_cy;
-		int walking = (pad & (SEGA_CTRL_UP | SEGA_CTRL_DOWN | SEGA_CTRL_LEFT | SEGA_CTRL_RIGHT))
-		              && now - moved_at < STUCK;
+		/* Between the taps of someone walking a step at a time counts too. */
+		static uint32_t pushed_at;
+		int pushed = pad & (SEGA_CTRL_UP | SEGA_CTRL_DOWN | SEGA_CTRL_LEFT | SEGA_CTRL_RIGHT);
+		if(pushed) pushed_at = now ? now : 1;
+		int walking = pushed ? now - moved_at < STUCK
+		                     : pushed_at && now - pushed_at < TAP_GAP;
 		int quiet = !hands_at || now - hands_at >= HANDS_OFF;
 
 		watch();

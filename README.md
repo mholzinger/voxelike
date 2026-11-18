@@ -109,9 +109,12 @@ otherwise stays where it is. Even then it waits its moment: while a
 direction is held and the hero is getting somewhere it does not move,
 however many doors he goes through. It moves when the pad is let go, or
 when he has walked as far as that direction will take him and stood against
-it for a moment. The D-pad keeps the camera direction it had
-when it was first pushed until it is let go, so even those swings do not
-change which way the hero is walking. Turning the camera by hand holds all
+it for a moment; a run of taps counts as holding. What up means is steadier
+still. It is always one of the map's four directions, the one nearest to
+away from the camera, and it changes only on a push after the pad has
+rested, and only if the camera has turned well past halfway to the next
+one. So the camera's own small swings leave the controls as they were.
+Turning the camera by hand holds all
 this off for three seconds. See `follow()` in `sh_src/m_main.c`.
 
 | Pad | Camera |
@@ -173,7 +176,7 @@ not jump. Turning the camera from the flat view tips it back out first.
   them on the cells they are over, turned to face the way they last moved,
   mid-step and mid-hop included. A flash colours the whole model.
 - Up on the D-pad is away from the camera: the pad's direction is turned by
-  the camera's, to the nearest eighth of a circle.
+  the camera's in quarter turns, and holds on to the one it has.
 - The loose voxels of something that died are placed over the finished
   picture where the camera sees them.
 - A creature's art may carry a back view (a third group of 8 per layer in

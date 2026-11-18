@@ -107,18 +107,35 @@ static void wait_any(void (*frame)(void), int frames) {
 }
 
 #ifdef PERSP
-/* Up on the pad means away from the camera, wherever that points on the
- * map: turn the pad's direction by the camera's, to the nearest eighth.
- * The camera's direction is taken when the pad is first pushed and kept
- * until it is let go, so a camera that swings while the hero is walking
- * does not change which way he walks. */
-static unsigned pad_turn;
+/* Up on the pad means away from the camera, as near as one of the map's
+ * four directions comes to that: never a diagonal, which Rogue will not
+ * walk through a door. The pad's direction is turned by quarter turns, and
+ * the turn is sticky. It is looked at again only on a push that follows
+ * PAD_REST vblanks of the pad let go, so neither a held direction nor a run
+ * of taps changes its meaning part way; and it changes then only if the
+ * camera has gone more than PAD_STICK from the direction up already has,
+ * so the camera's own small swings leave the controls as they were. */
+#define PAD_REST   20
+#define PAD_STICK  0x2C00   /* a little over a sixth of a turn */
+
+static unsigned pad_turn;   /* in eighths, always even */
 
 static void pad_turn_latch(uint16_t dir) {
 	extern uint16_t persp_yaw;
 	static uint16_t was;
+	static uint32_t let_go;
+	static int rested = 1;
+	uint32_t now = MARS_SYS_COMM12;
 
-	if(dir && !was) pad_turn = ((uint16_t)(persp_yaw - 0xC000 + 0x1000) >> 13) & 7;
+	if(!dir && was) let_go = now;
+	if(!dir && now - let_go >= PAD_REST) rested = 1;
+	if(dir && rested) {
+		uint16_t north = (uint16_t)(persp_yaw - 0xC000);
+		int off = (int16_t)(north - (pad_turn << 13));
+		if(off < 0) off = -off;
+		if(off > PAD_STICK) pad_turn = (((uint16_t)(north + 0x2000) >> 14) & 3) * 2;
+		rested = 0;
+	}
 	was = dir;
 }
 
