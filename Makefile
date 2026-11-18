@@ -138,7 +138,7 @@ FRAMES ?= 180
 # command line.
 MISTER ?= root@mister.local
 
-.PHONY: all release debug shot deploy clean
+.PHONY: all release debug shot deploy ship clean
 
 all: release
 
@@ -244,6 +244,10 @@ port/%.o: port/%.c
 sh_src/%.o: sh_src/%.c
 	@echo "SHCC $<"
 	@$(SHCC) $(SHCCFLAGS) $(SHEXTRA) -MMD -MP -c $< -o $@
+
+# Release what is on development: see tools/ship.sh
+ship:
+	@tools/ship.sh
 
 clean:
 	rm -f $(MDOBJS) $(SHOBJS) $(MDOBJS:.o=.d) $(SHOBJS:.o=.d)

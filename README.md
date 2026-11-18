@@ -28,13 +28,16 @@ make RES=0      # start in a resolution: 0 160x112, 1 320x112, 2 320x224, 3 focu
 make shot       # build, run headless in ares, write shots/latest.png
 make shot FRAMES=320 INPUT=keys.csv
 make deploy     # scp to a MiSTer (MISTER=root@host)
+make ship       # release what is on development: shows it, asks, pushes main
 ```
 
 Releases: every push to `main` is one. `.github/workflows/build.yml` builds
 the ROM with the prebuilt Marsdev toolchain, names it with `VERSION` and the
 next number after the newest tag (`0.1.0-alpha.3`), and publishes it with
 the commits since the last release as its notes. A push to `development` is
-built the same way and kept as a workflow artifact, not released.
+built the same way and kept as a workflow artifact, not released. `make
+ship` is the way to push to `main`: it lists what would go out and the
+number it would get, asks, and then moves `main` up to `development`.
 
 `make shot` needs the headless ares fork (`ARES=` overrides its path). The
 Makefile lists the rest: `PERSP=2` turns the camera by itself for measuring
