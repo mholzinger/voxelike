@@ -247,7 +247,7 @@ sh_src/%.o: sh_src/%.c
 
 # Release what is on development: see tools/ship.sh
 ship:
-	@tools/ship.sh
+	@YES=$(YES) tools/ship.sh
 
 clean:
 	rm -f $(MDOBJS) $(SHOBJS) $(MDOBJS:.o=.d) $(SHOBJS:.o=.d)

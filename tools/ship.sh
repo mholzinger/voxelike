@@ -2,7 +2,8 @@
 # Release what is on development: show what would go out, ask, then move
 # main up to it and push both. The push to main is what makes GitHub build
 # and publish the release (.github/workflows/build.yml).
-#   make ship
+#   make ship          asks before pushing
+#   make ship YES=1    does not ask: for where there is no terminal to answer on
 set -eu
 die() { echo "ship: $*" >&2; exit 1; }
 
@@ -26,9 +27,15 @@ if [ -z "$(git diff --name-only origin/main..development | grep -Ev '\.md$|^shot
 	echo "Only notes and pictures changed: GitHub will not build a release for this."
 fi
 echo
-printf 'Push this to main and release it as %s? [y/N] ' "$V"
-read -r ANSWER
-[ "$ANSWER" = y ] || die "nothing was pushed"
+if [ "${YES:-}" = 1 ]; then
+	echo "Releasing it as $V."
+elif [ -t 0 ]; then
+	printf 'Push this to main and release it as %s? [y/N] ' "$V"
+	read -r ANSWER
+	[ "$ANSWER" = y ] || die "nothing was pushed"
+else
+	die "nothing was pushed: there is no terminal to ask on. If the list above is right, run: make ship YES=1"
+fi
 
 git push origin development development:main
 git branch -f main origin/main >/dev/null
