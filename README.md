@@ -137,10 +137,10 @@ index 1, not 0: the 32X drops a zero written to the framebuffer as a byte.
 Focus draws the middle of the screen fine and the rest coarse. The hero is
 always at the middle, so a fixed window 64 pixels by 94 scanlines holds him
 and the tiles next to him whichever way the camera looks. Coarse columns
-that cross the window leave a hole in it, and two fine rays per column fill
-the hole; a fine ray starts 32 rows below the window, drawing nothing, so
-that whatever stands that near and reaches up into the window is in place
-by the first row that shows. Over two bot-played levels in ares a frame
+are drawn right across the screen, and then two fine rays per column draw
+the window over them; a fine ray starts 32 rows below the window, so that
+whatever stands that near and reaches up into the window is in place by the
+first row that shows, and what it draws down there is put back afterwards. Over two bot-played levels in ares a frame
 took 5671 ticks at the median and 7681 at worst, between 30 and 20 frames
 a second. The game starts in it; `make RES=0` starts in 160x112 (RES is
 0 to 3).
@@ -165,9 +165,9 @@ not jump. Turning the camera from the flat view tips it back out first.
 - Each cell's facts sit in one 16 byte record, a cache line, and a floor's
   colours in 64 bytes.
 - Measured on a MiSTer with `tools/mbench.sh` (a fixed dungeon, the camera
-  going once round it, 256 frames): a frame takes 4766 FRT ticks on average
-  and 5421 at worst at 160x112, inside the 6000 that 30 frames a second
-  allows. Focus mode takes 8224, about 20 frames a second.
+  going once round it, 256 frames): a frame takes 4529 FRT ticks on average
+  and 5145 at worst at 160x112, inside the 6000 that 30 frames a second
+  allows. Focus mode takes 7750, about 20 frames a second.
 - What was learned getting there, each step timed on the MiSTer:
   - It started at 6105. ares said 3307 for the same frames, so ares is for
     checking pictures and counting instructions, not for frame rates.
@@ -186,6 +186,17 @@ not jump. Turning the camera from the flat view tips it back out first.
     are no help set around a whole frame's rays. With data kept out the
     frame took 13653 where it takes 4765; with code kept out it did not
     finish in the time allowed.
+  - Focus mode is where the 4K cache does matter, because it has more
+    than one ray routine. Sending all the rays of one kind before any of
+    the next gained 6 percent. Cutting runs of rows where the clipping
+    changed, to ask nothing per pixel, made the routines bigger and the
+    frame 7 percent slower though ares counted fewer cycles; drawing
+    without clipping and tidying up after (a copy, and 16 words kept and
+    put back) made them small again and the frame went from 8224 to 7750.
+  - The compiler's pixel loops had waste in them (a colour looked up
+    twice, constants loaded every pixel) that went away when the loop was
+    written as a run with the pixel in a variable: 4766 to 4529 at
+    160x112, with no assembly.
   - `ares-headless --profile` and `tools/profile.py` found it. Measure
     first.
 - Creatures are real voxel models here: `tools/bake_models.py --solid` turns
