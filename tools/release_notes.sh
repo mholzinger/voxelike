@@ -23,4 +23,4 @@ if [ -n "$ROM" ]; then
 	echo "SHA-256: \`$(sha256sum "$ROM" | cut -d' ' -f1)\`"
 fi
 echo
-echo "Rogue is copyright its authors and distributed under its own licence: see \`rogue/LICENSE.TXT\`. The rest is under \`LICENSE\`."
+echo "Rogue is copyright its authors and distributed under its own licence, attached as \`LICENSE-rogue.txt\`. The rest is under \`LICENSE-voxelike.txt\`."

@@ -7,7 +7,8 @@ name: build
 on:
   push:
     branches: [main, development]
-    paths-ignore: ['**.md', 'shots/**']
+    # Nothing in these is in the ROM.
+    paths-ignore: ['**.md', 'shots/**', '.github/**', 'tools/*.sh']
   workflow_dispatch:
 
 permissions:
@@ -82,5 +83,9 @@ jobs:
           set -euo pipefail
           V="${{ steps.name.outputs.version }}"
           tools/release_notes.sh "$V" "${{ steps.name.outputs.previous }}" "voxelike-$V.32x" > notes.md
-          gh release create "v$V" "voxelike-$V.32x" --title "$V" --notes-file notes.md \
+          # Rogue's licence asks to go wherever a binary of it goes.
+          cp rogue/LICENSE.TXT LICENSE-rogue.txt
+          cp LICENSE LICENSE-voxelike.txt
+          gh release create "v$V" "voxelike-$V.32x" LICENSE-rogue.txt LICENSE-voxelike.txt \
+            --title "$V" --notes-file notes.md \
             --prerelease --target "$GITHUB_SHA"

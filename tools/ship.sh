@@ -18,19 +18,20 @@ BASE=$(cat VERSION)
 LAST=$(git tag --list "v$BASE.*" | sed "s/^v$BASE\.//" | sort -n | tail -1)
 V=$BASE.$(( ${LAST:-0} + 1 ))
 
-echo "Shipping $V: $(git rev-parse --short origin/main) -> $(git rev-parse --short development)"
+echo "To main, as $V if anything in the ROM changed: $(git rev-parse --short origin/main) -> $(git rev-parse --short development)"
 echo
 git log --no-merges --pretty='  %h %s' origin/main..development
 echo
 git diff --stat origin/main..development | tail -1
-if [ -z "$(git diff --name-only origin/main..development | grep -Ev '\.md$|^shots/')" ]; then
-	echo "Only notes and pictures changed: GitHub will not build a release for this."
+if [ -z "$(git diff --name-only origin/main..development | grep -Ev '\.md$|^shots/|^\.github/|^tools/[^/]*\.sh$')" ]; then
+	echo "Nothing that is in the ROM changed: GitHub will not build a release for this."
+	V=
 fi
 echo
 if [ "${YES:-}" = 1 ]; then
-	echo "Releasing it as $V."
+	echo "${V:+Releasing it as $V.}"
 elif [ -t 0 ]; then
-	printf 'Push this to main and release it as %s? [y/N] ' "$V"
+	printf 'Push this to main%s? [y/N] ' "${V:+ and release it as $V}"
 	read -r ANSWER
 	[ "$ANSWER" = y ] || die "nothing was pushed"
 else
@@ -40,7 +41,7 @@ fi
 git push origin development development:main
 git branch -f main origin/main >/dev/null
 
-if command -v gh >/dev/null; then
+if [ -n "$V" ] && command -v gh >/dev/null; then
 	echo "Waiting for GitHub to build it..."
 	sleep 10
 	RUN=$(gh run list --branch main --workflow build --limit 1 --json databaseId -q '.[0].databaseId')
