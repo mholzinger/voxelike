@@ -48,8 +48,9 @@ static const uint16_t focal_step[17] = { 128, 156, 190, 232, 283, 346, 421, 514,
 
 static uint32_t inv_t[INV_N];              /* focal length / depth, Q16 */
 static uint32_t rise_t[INV_N];             /* depth / focal length, Q16: voxels per row */
-/* Depth, in Q28, at which a level surface one voxel below the eye shows on
- * each row. One h voxels below shows at h times that. */
+/* Depth, in Q30, at which a level surface one voxel below the eye shows on
+ * each row. One h voxels below shows at h times that. It is never as much
+ * as 2: the eye is at least as high as the focal length is long. */
 static uint32_t row_t[2 * VIEW_H];
 
 /* One frame's camera, shared by both CPUs. The primary fills it in and
@@ -305,18 +306,137 @@ enum { CLIP_NONE, CLIP_HOLE, CLIP_FOCUS };
         y -= ybuf - (top);                                             \
     } while (0)
 
+/* The tables, by depth. */
+#define INV(t)  inv_t[((t) - T_NEAR) >> INV_STEP]
+#define RISE(t) rise_t[((t) - T_NEAR) >> INV_STEP]
+/* Where the ray is at a depth: the eye plus direction times depth, as
+ * Q20 times Q12 so the voxel number is simply the product's high word. */
+#define AT_X(t12) ((int)(((int64_t)dx20 * (int32_t)(t12) + ex48) >> 32))
+#define AT_Y(t12) ((int)(((int64_t)dy20 * (int32_t)(t12) + ey48) >> 32))
+
+/* What a ray hands over when it comes to a cell that is not one height all
+ * over, and gets back when the cell has been drawn. */
+typedef struct {
+    uint8_t *dst;                          /* in and out: how far the column is drawn */
+    int y, ybuf, prev_h, x_side;
+    int cx, cy;                            /* the cell, and the ray's depths at it */
+    int32_t t_in, t_out, tcx, tcy;
+    int32_t dx, dy, tdx, tdy, ex, ey;      /* the ray */
+} walk_t;
+
+typedef int walk_fn(walk_t *w);
+
+/* Walk the voxel columns of one cell, each adding its near side and its
+ * top. Returns 1 when that has filled the screen column.
+ *
+ * This is apart from ray() for the cache's sake. The SH-2's is 4K, and a
+ * ray needs most of that for the map and the tables it reads; the walk is
+ * as much code again as the rest of a ray and is wanted for a cell in
+ * dozens (a creature, a door, the stairs). Apart, it is only in the cache
+ * when it is in use. */
+static inline __attribute__((always_inline))
+int walk(walk_t *w, const int WIDE, const int YS, const int TWICE, const int CLIP) {
+    const int32_t EYE_H = job.eye_h, T_NEAR = job.t_near;
+    const int32_t HORIZON = job.horizon << YS;
+    const int YEND = CLIP == CLIP_FOCUS ? FOCUS_Y0 : 0;
+    const pcell_t *pc = &cells[w->cy][w->cx];
+    const vmodel_t *m = pc->m;
+    const unsigned st = pc->light, plinth = pc->plinth;
+    const int lift = pc->lift;
+    const int32_t dx = w->dx, dy = w->dy, tdx = w->tdx, tdy = w->tdy;
+    const int cx = w->cx, cy = w->cy;
+    const int32_t t_in = w->t_in, t_out = w->t_out;
+    int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
+    int32_t dx20 = dx << 4, dy20 = dy << 4;
+    int64_t ex48 = (int64_t)w->ex << 16, ey48 = (int64_t)w->ey << 16;
+    uint8_t *dst = w->dst;
+    int y = w->y, ybuf = w->ybuf, prev_h = w->prev_h, x_side = w->x_side;
+    int done = 0;
+
+    /* Where the ray is as it comes in, nudged inside so rounding cannot
+     * put it next door. */
+    int32_t tq = (t_in >> 4) + 1;
+    int ix = AT_X(tq), iy = AT_Y(tq);
+    if (ix >> 3 != cx) ix = cx * 8 + (ix >> 3 < cx ? 0 : 7);
+    if (iy >> 3 != cy) iy = cy * 8 + (iy >> 3 < cy ? 0 : 7);
+
+    /* Depth at this voxel's far line on each axis: the cell's own far
+     * line, less the voxel lines still to cross before it. */
+    int32_t tvx = tdx >= NEVER ? NEVER : w->tcx - tdx * (dx < 0 ? ix & 7 : 7 - (ix & 7));
+    int32_t tvy = tdy >= NEVER ? NEVER : w->tcy - tdy * (dy < 0 ? iy & 7 : 7 - (iy & 7));
+    int32_t tv_in = t_in;
+    unsigned sf0 = vox_front_shade[st];
+
+    for (;;) {
+        const vcol_t *col = &m->col[ix & 7][iy & 7];
+        int h = col->h + lift;
+
+        /* The side that faces the eye, where the ray came in. */
+        if (h > prev_h) {
+            uint32_t s = INV(tv_in);
+            int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
+            if (top < YEND) top = YEND;
+            if (top < ybuf) {
+                unsigned sf = (x_side && sf0) ? sf0 - 1 : sf0;
+                int32_t zstep = (int32_t)RISE(tv_in) >> YS;
+                int32_t z = (EYE_H << 16) - (ybuf - 1 - HORIZON) * zstep;
+                if (HIDDEN(top)) PASS(top);
+                else for (int n = ybuf - top; n > 0; n--) {
+                    int zi = z >> 16;
+                    if (zi < 0) zi = 0;
+                    if (zi >= h) zi = h - 1;
+                    PIXEL(vox_wtab[(zi < lift ? plinth : col->c[zi - lift]) + sf]);
+                    z += zstep;
+                }
+                ybuf = top;
+                if (ybuf == YEND) { done = 1; break; }
+            }
+        }
+
+        /* Its top, from where the ray came in to where it goes out. */
+        int vx_next = tvx < tvy;
+        int32_t tv_out = vx_next ? tvx : tvy;
+        if (tv_out > t_out) tv_out = t_out;
+        {
+            uint32_t s = INV(tv_out);
+            int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
+            if (top < YEND) top = YEND;
+            if (top < ybuf) {
+                uint16_t pix = col->h ? vox_wtab[col->c[col->h - 1] + st]
+                                      : (h ? vox_wtab[plinth + st] : BLACK);
+                if (HIDDEN(top)) PASS(top);
+                else for (int n = ybuf - top; n > 0; n--) {
+                    PIXEL(pix);
+                }
+                ybuf = top;
+                if (ybuf == YEND) { done = 1; break; }
+            }
+        }
+        prev_h = h;
+        if (tv_out >= t_out) break;
+
+        if (vx_next) { ix += sx; tvx += tdx; }
+        else         { iy += sy; tvy += tdy; }
+        if (ix >> 3 != cx || iy >> 3 != cy) break;
+        x_side = vx_next;
+        tv_in = tv_out;
+    }
+    w->dst = dst; w->y = y; w->ybuf = ybuf; w->prev_h = prev_h;
+    return done;
+}
+
 static inline __attribute__((always_inline))
 void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
          int32_t tdx, int32_t tdy, const int WIDE, const int YS,
-         const int TWICE, const int CLIP) {
+         const int TWICE, const int CLIP, walk_fn *const WALK) {
+    walk_t w;
+    w.dx = dx; w.dy = dy; w.tdx = tdx; w.tdy = tdy; w.ex = ex; w.ey = ey;
     const int32_t EYE_H = job.eye_h, T_NEAR = job.t_near, T_FAR = job.t_far;
     const int32_t HORIZON = job.horizon << YS;
     /* A focus ray draws rows YEND up to FOCUS_START and starts as deep as
      * the ground is on the row it starts from; any other draws them all. */
     const int YEND = CLIP == CLIP_FOCUS ? FOCUS_Y0 : 0;
     const int32_t T_BEGIN = CLIP == CLIP_FOCUS ? job.t_focus : T_NEAR;
-#define INV(t)  inv_t[((t) - T_NEAR) >> INV_STEP]
-#define RISE(t) rise_t[((t) - T_NEAR) >> INV_STEP]
     int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
     int32_t px = ex + (int32_t)(((int64_t)dx * T_BEGIN) >> 16);
     int32_t py = ey + (int32_t)(((int64_t)dy * T_BEGIN) >> 16);
@@ -331,12 +451,8 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
     int32_t tdcx = tdx >= NEVER / 8 ? NEVER : tdx * 8;
     int32_t tdcy = tdy >= NEVER / 8 ? NEVER : tdy * 8;
 
-    /* Where the ray is at a depth: the eye plus direction times depth, as
-     * Q20 times Q12 so the voxel number is simply the product's high word. */
     int32_t dx20 = dx << 4, dy20 = dy << 4;
     int64_t ex48 = (int64_t)ex << 16, ey48 = (int64_t)ey << 16;
-#define AT_X(t12) ((int)(((int64_t)dx20 * (int32_t)(t12) + ex48) >> 32))
-#define AT_Y(t12) ((int)(((int64_t)dy20 * (int32_t)(t12) + ey48) >> 32))
 
     int32_t t_in = T_BEGIN;
     int ybuf = CLIP == CLIP_FOCUS ? FOCUS_START : VIEW_H << YS;   /* rows from here down are drawn */
@@ -419,87 +535,35 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
             int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
             if (top < YEND) top = YEND;
             if (top < ybuf) {
+                /* The ray is over the voxel at eye + direction * depth, and
+                 * the depth on a row is row_t's for it times how far below
+                 * the eye this top is. Direction times that, as Q18, is the
+                 * same for the whole run; times row_t's Q30 it is a Q48
+                 * whose high word is how far from the eye in Q16, so a row
+                 * costs two multiplies and nothing wider than a word. */
                 const uint32_t *pt = &row_t[(ybuf - 1) << (1 - YS)];
                 int32_t below = EYE_H - h;
+                int32_t ax = (dx * below) << 2, ay = (dy * below) << 2;
                 if (HIDDEN(top)) PASS(top);
                 else for (int n = ybuf - top; n > 0; n--) {
-                    int32_t t = (int32_t)(((uint64_t)*pt * (uint32_t)below) >> 16);
+                    int32_t r = (int32_t)*pt;
                     pt -= 2 >> YS;
-                    PIXEL(vox_wtab[tex[(AT_X(t) & 7) * CELL + (AT_Y(t) & 7)] + st]);
+                    int vx = (ex + (int32_t)(((int64_t)ax * r) >> 32)) >> 16;
+                    int vy = (ey + (int32_t)(((int64_t)ay * r) >> 32)) >> 16;
+                    PIXEL(vox_wtab[tex[(vx & 7) * CELL + (vy & 7)] + st]);
                 }
                 ybuf = top;
                 if (ybuf == YEND) return;
             }
             prev_h = h;
         } else {
-            /* Walk the voxel columns of this cell. Where the ray is as it
-             * comes in, nudged inside so rounding cannot put it next door. */
-            int32_t tq = (t_in >> 4) + 1;
-            int ix = AT_X(tq), iy = AT_Y(tq);
-            if (ix >> 3 != cx) ix = cx * 8 + (ix >> 3 < cx ? 0 : 7);
-            if (iy >> 3 != cy) iy = cy * 8 + (iy >> 3 < cy ? 0 : 7);
-
-            /* Depth at this voxel's far line on each axis: the cell's own
-             * far line, less the voxel lines still to cross before it. */
-            int32_t tvx = tdx >= NEVER ? NEVER : tcx - tdx * (dx < 0 ? ix & 7 : 7 - (ix & 7));
-            int32_t tvy = tdy >= NEVER ? NEVER : tcy - tdy * (dy < 0 ? iy & 7 : 7 - (iy & 7));
-            int32_t tv_in = t_in;
-            unsigned sf0 = vox_front_shade[st];
-
-            for (;;) {
-                const vcol_t *col = &m->col[ix & 7][iy & 7];
-                int h = col->h + lift;
-
-                /* The side that faces the eye, where the ray came in. */
-                if (h > prev_h) {
-                    uint32_t s = INV(tv_in);
-                    int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
-                    if (top < YEND) top = YEND;
-                    if (top < ybuf) {
-                        unsigned sf = (x_side && sf0) ? sf0 - 1 : sf0;
-                        int32_t zstep = (int32_t)RISE(tv_in) >> YS;
-                        int32_t z = (EYE_H << 16) - (ybuf - 1 - HORIZON) * zstep;
-                        if (HIDDEN(top)) PASS(top);
-                        else for (int n = ybuf - top; n > 0; n--) {
-                            int zi = z >> 16;
-                            if (zi < 0) zi = 0;
-                            if (zi >= h) zi = h - 1;
-                            PIXEL(vox_wtab[(zi < lift ? plinth : col->c[zi - lift]) + sf]);
-                            z += zstep;
-                        }
-                        ybuf = top;
-                        if (ybuf == YEND) return;
-                    }
-                }
-
-                /* Its top, from where the ray came in to where it goes out. */
-                int vx_next = tvx < tvy;
-                int32_t tv_out = vx_next ? tvx : tvy;
-                if (tv_out > t_out) tv_out = t_out;
-                {
-                    uint32_t s = INV(tv_out);
-                    int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
-                    if (top < YEND) top = YEND;
-                    if (top < ybuf) {
-                        uint16_t w = col->h ? vox_wtab[col->c[col->h - 1] + st]
-                                            : (h ? vox_wtab[plinth + st] : BLACK);
-                        if (HIDDEN(top)) PASS(top);
-                        else for (int n = ybuf - top; n > 0; n--) {
-                            PIXEL(w);
-                        }
-                        ybuf = top;
-                        if (ybuf == YEND) return;
-                    }
-                }
-                prev_h = h;
-                if (tv_out >= t_out) break;
-
-                if (vx_next) { ix += sx; tvx += tdx; }
-                else         { iy += sy; tvy += tdy; }
-                if (ix >> 3 != cx || iy >> 3 != cy) break;
-                x_side = vx_next;
-                tv_in = tv_out;
-            }
+            /* Anything else is walked a voxel column at a time, by code
+             * kept apart from this: see walk(). */
+            w.dst = dst; w.y = y; w.ybuf = ybuf; w.prev_h = prev_h; w.x_side = x_side;
+            w.cx = cx; w.cy = cy;
+            w.t_in = t_in; w.t_out = t_out; w.tcx = tcx; w.tcy = tcy;
+            if (WALK(&w)) return;
+            dst = w.dst; y = w.y; ybuf = w.ybuf; prev_h = w.prev_h;
         }
         if (t_out >= T_FAR) break;
 
@@ -514,11 +578,16 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
 }
 
 
+/* The walks go after all the rays, out of their way. */
 #define RAY(name, wide, ys, twice, clip)                                           \
+    __attribute__((section(".ramtext.walk"), noinline))                            \
+    static int name##_walk(walk_t *w) {                                            \
+        return walk(w, wide, ys, twice, clip);                                     \
+    }                                                                              \
     __attribute__((section(".ramtext"), noinline))                                 \
     static void name(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy, \
                      int32_t tdx, int32_t tdy) {                                   \
-        ray(dst, ex, ey, dx, dy, tdx, tdy, wide, ys, twice, clip);                 \
+        ray(dst, ex, ey, dx, dy, tdx, tdy, wide, ys, twice, clip, name##_walk);    \
     }
 RAY(ray_coarse, 1, 0, 0, CLIP_NONE)
 RAY(ray_wide, 0, 0, 0, CLIP_NONE)
@@ -532,55 +601,84 @@ RAY(ray_focus, 0, 1, 0, CLIP_FOCUS)        /* fine, in it */
 typedef void ray_fn(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                     int32_t tdx, int32_t tdy);
 
-/* Send the ray for column col of `cols` across the screen. */
-static void cast(ray_fn *fn, uint8_t *dst, int col, int cols) {
-    sh2z_fx_t s = job.s, c = job.c;
-    sh2z_fx_t k = ((2 * col - (cols - 1)) << 16) / (2 * job.focal * (cols / VIEW_W));
-    sh2z_fx_t dx = c - sh2z_mul(s, k);
-    sh2z_fx_t dy = s + sh2z_mul(c, k);
+/* The SH-2's own divider, which each of the two has: 39 cycles, where the
+ * compiler's routine is some hundreds. 1 / a for a Q16 a of 256 or more. */
+#define DIVU_DVSR    (*(volatile uint32_t *)0xFFFFFF00)
+#define DIVU_DVDNTH  (*(volatile uint32_t *)0xFFFFFF10)
+#define DIVU_DVDNTL  (*(volatile uint32_t *)0xFFFFFF14)
+
+static inline __attribute__((always_inline)) int32_t recip(int32_t a) {
+    DIVU_DVSR = (uint32_t)a;
+    DIVU_DVDNTH = 1;                       /* 2^32 over a */
+    DIVU_DVDNTL = 0;
+    return (int32_t)DIVU_DVDNTL;
+}
+
+/* How far to the side of straight ahead each column looks, as a slope:
+ * lens() works these out, since only the lens changes them. */
+static int32_t slope_t[3 * VIEW_W];
+
+static void slopes(int32_t *t, int cols, int32_t focal) {
+    for (int col = 0; col < cols; col++) {
+        t[col] = ((2 * col - (cols - 1)) << 16) / (2 * focal * (cols / VIEW_W));
+    }
+}
+
+/* Send the ray for column col across the screen.
+ *
+ * This and columns() run from RAM with the rays. From ROM, as they were
+ * (with a divide and two reciprocals done by subroutine), a ray cost a
+ * third as much to send as to draw: a ray leaves little of the cache as it
+ * found it, and code that is read back from ROM is read back slowly. */
+static inline __attribute__((always_inline))
+void cast(ray_fn *fn, uint8_t *dst, int col) {
+    int32_t s = job.s, c = job.c, k = slope_t[col];
+    int32_t dx = c - (int32_t)(((int64_t)s * k) >> 16);
+    int32_t dy = s + (int32_t)(((int64_t)c * k) >> 16);
 
     /* Depth between voxel lines on each axis. A ray that runs along an
      * axis, or nearly, never meets the other axis's lines on screen. */
-    sh2z_fx_t tdx = dx ? sh2z_recip(sh2z_abs(dx)) : NEVER;
-    sh2z_fx_t tdy = dy ? sh2z_recip(sh2z_abs(dy)) : NEVER;
-    if (tdx > 0x1000000) tdx = NEVER;
-    if (tdy > 0x1000000) tdy = NEVER;
+    int32_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+    int32_t tdx = ax < 256 ? NEVER : recip(ax);
+    int32_t tdy = ay < 256 ? NEVER : recip(ay);
 
     fn(dst, job.ex, job.ey, dx, dy, tdx, tdy);
 }
 
 /* This CPU's share of the frame: every other column, starting at `first`. */
+__attribute__((section(".ramtext"), noinline))
 static void columns(int first) {
     uint8_t *pixels = (uint8_t *)(job.fb + FB_PIXELS);
 
     switch (job.res) {
     case PERSP_RES_COARSE:
         for (int col = first; col < VIEW_W; col += 2) {
-            cast(ray_coarse, pixels + (VIEW_H - 1) * STRIDE + col * 2, col, VIEW_W);
+            cast(ray_coarse, pixels + (VIEW_H - 1) * STRIDE + col * 2, col);
         }
         break;
     case PERSP_RES_WIDE:
         for (int col = first; col < 2 * VIEW_W; col += 2) {
-            cast(ray_wide, pixels + (VIEW_H - 1) * STRIDE + col, col, 2 * VIEW_W);
+            cast(ray_wide, pixels + (VIEW_H - 1) * STRIDE + col, col);
         }
         break;
     case PERSP_RES_FINE:
         for (int col = first; col < 2 * VIEW_W; col += 2) {
-            cast(ray_fine, pixels + (2 * VIEW_H - 1) * STRIDE + col, col, 2 * VIEW_W);
+            cast(ray_fine, pixels + (2 * VIEW_H - 1) * STRIDE + col, col);
         }
         break;
     default:
         /* Coarse columns, each two framebuffer rows to a row. One that
-         * crosses the focus window leaves a hole for its two fine columns. */
+         * crosses the focus window leaves a hole for its two fine columns,
+         * which look where columns 2 * col and 2 * col + 1 of 320 would. */
         for (int col = first; col < VIEW_W; col += 2) {
             uint8_t *at = pixels + (2 * VIEW_H - 2) * STRIDE + col * 2;
             if (col < FOCUS_X0 / 2 || col >= FOCUS_X1 / 2) {
-                cast(ray_around, at, col, VIEW_W);
+                cast(ray_around, at, col);
                 continue;
             }
-            cast(ray_hole, at, col, VIEW_W);
+            cast(ray_hole, at, col);
             for (int fine = 2 * col; fine < 2 * col + 2; fine++) {
-                cast(ray_focus, pixels + (FOCUS_START - 1) * STRIDE + fine, fine, 2 * VIEW_W);
+                cast(ray_focus, pixels + (FOCUS_START - 1) * STRIDE + fine, VIEW_W + fine);
             }
         }
         break;
@@ -662,9 +760,17 @@ static void lens(int flat, int pull, int res) {
         inv_t[n] = ((uint32_t)focal << 19) / (t >> 13);
         rise_t[n] = t / (uint32_t)focal;
     }
+    /* The focus view is coarse but for its window, and keeps the fine
+     * columns' slopes for that after its own. */
+    if (res == PERSP_RES_FOCUS) {
+        slopes(slope_t, VIEW_W, focal);
+        slopes(slope_t + VIEW_W, 2 * VIEW_W, focal);
+    } else {
+        slopes(slope_t, job.cols, focal);
+    }
     /* By scanline; a coarse ray reads every other entry. */
     for (int y = 0; y < 2 * VIEW_H; y++) {
-        row_t[y] = (uint32_t)((((uint64_t)focal) << 29) / (uint32_t)(y - 2 * horizon));
+        row_t[y] = (uint32_t)((((uint64_t)focal) << 31) / (uint32_t)(y - 2 * horizon));
     }
 }
 

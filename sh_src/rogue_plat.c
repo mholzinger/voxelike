@@ -46,6 +46,9 @@ int plat_step_frames = STEP;
 #define STATUS_ROW    26
 
 unsigned long plat_ticks(void) {
+#ifdef BENCH
+	return BENCH;   /* the dungeon's seed: the same one every run */
+#endif
 	return MARS_SYS_COMM12;
 }
 
@@ -489,6 +492,16 @@ static int command_key(void) {
 		/* Nothing from the player: the world takes a turn anyway. By the
 		 * clock, not by frames, which the two views draw at different rates. */
 		if(vox_hero_busy) idle_since = MARS_SYS_COMM12;
+#ifdef BENCH
+		/* Nothing may change between runs, but the readout must. */
+		static uint32_t told;
+		idle_since = MARS_SYS_COMM12;
+		if(idle_since - told >= 60) {
+			told = idle_since;
+			compose_hud();
+			text_commit();
+		}
+#endif
 		if(MARS_SYS_COMM12 - idle_since >= IDLE_TURN) {
 			rogue_idle(1);
 			plat_step_frames = IDLE_TURN;

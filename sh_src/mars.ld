@@ -84,7 +84,8 @@ SECTIONS {
 	 * _sdata) carries both. Opt in with __attribute__((section(".ramtext"))). */
 	.ramtext 0x06000000 + SIZEOF(.data) : AT(LOADADDR(.data) + SIZEOF(.data)) {
 		. = ALIGN(0x4);
-		*(.ramtext .ramtext.*)
+		*(.ramtext)
+		*(.ramtext.*)
 		. = ALIGN(0x4);
 	} > ram
 	_sdata = SIZEOF(.data) + SIZEOF(.ramtext);

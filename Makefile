@@ -70,9 +70,18 @@ RGFLAGS = -m2 -mb -O2 -fomit-frame-pointer -ffreestanding -Iport/include -Irogue
 #   make STATS=1    show frames a second and the time to draw one
 #   make PERSP=2    turn the camera by itself, for measuring
 #   make BOT=1      a ROM that plays itself, for tools/botrun.py
+#   make BENCH=n    the same picture every run, for timing: dungeon n, the
+#                   hero standing in it, and the camera going round him. Each
+#                   turn of the camera is the same 256 frames, and the yellow
+#                   line gives the mean and worst time to draw one of them
 PERSP ?= 1
 ifdef FLAT
 override PERSP :=
+endif
+ifdef BENCH
+override PERSP := 2
+override STATS := 1
+SHCCFLAGS += -DBENCH=$(BENCH)
 endif
 ifdef BOT
 RGFLAGS   += -DBOT
@@ -83,7 +92,7 @@ SHCCFLAGS += -DPERSP=$(PERSP) $(if $(RES),-DPERSP_RES=$(RES)) $(if $(STATS),-DST
 endif
 .DEFAULT_GOAL := all
 BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)
-PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)$(if $(RES),-res$(RES))$(if $(STATS),-stats)
+PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)$(if $(RES),-res$(RES))$(if $(STATS),-stats)$(if $(BENCH),-bench$(BENCH))
 # File times here are whole seconds. A stamp waits one out before it is
 # made, so that it is strictly newer than everything the last build left,
 # and everything that depends on the kind of build is made again.

@@ -399,8 +399,13 @@ void game_frame(void) {
 		frames++;
 		sum += game_render_ticks;
 		if(game_render_ticks > worst) worst = game_render_ticks;
+#ifdef BENCH
+		/* Once a turn of the camera, which is the same frames every time. */
+		if(frames == 256) {
+#else
 		if(MARS_SYS_COMM12 - since >= 60) {
-			perf_fps = frames;
+#endif
+			perf_fps = (uint16_t)(frames * 60 / (MARS_SYS_COMM12 - since));
 			perf_mean = (uint16_t)(sum / frames);
 			perf_worst = worst;
 			since = MARS_SYS_COMM12;
@@ -450,7 +455,7 @@ int m_main(void) {
 	text_put(14, 10, "VOXELIKE32X", -1, TEXT_YELLOW, 0);
 	text_put(14, 14, "PRESS START", -1, TEXT_WHITE, 0);
 	text_commit();
-#ifdef BOT
+#if defined(BOT) || defined(BENCH)
 	/* Nobody is there to press it. */
 	for(uint32_t t = MARS_SYS_COMM12; MARS_SYS_COMM12 - t < 120 && !(MARS_SYS_COMM8 & SEGA_CTRL_START); );
 #else

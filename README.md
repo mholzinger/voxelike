@@ -22,6 +22,7 @@ export MARSDEV=/path/to/marsdev/mars
 make            # rom/voxelike.32x: the game
 make FLAT=1     # the flat view alone, without the 3D renderer
 make STATS=1    # show frames a second and the time to draw one
+make BENCH=7    # the same 256 frames every run, for timing (tools/mbench.sh)
 make RES=3      # start in a resolution: 0 160x112, 1 320x112, 2 320x224, 3 focus
 make shot       # build, run headless in ares, write shots/latest.png
 make shot FRAMES=320 INPUT=keys.csv
@@ -157,20 +158,31 @@ not jump. Turning the camera from the flat view tips it back out first.
 - Both SH-2s draw: the primary the even columns, the secondary the odd ones,
   started through COMM6. The secondary purges its cache first, because it
   has not seen what the primary wrote to the world.
-- The camera basis and per-column reciprocals come from SH2ZAM
-  (`third_party/SH2ZAM`, MIT, a vendored subset).
+- The camera basis comes from SH2ZAM (`third_party/SH2ZAM`, MIT, a vendored
+  subset). Each ray's two reciprocals come from the SH-2's own divider, and
+  the columns' slopes from a table made when the lens changes.
 - Each cell's facts sit in one 16 byte record, a cache line, and a floor's
-  colours in 64 bytes: on hardware the SH-2's 4K cache decides the speed.
-- Measured in ares over three dungeon levels played by the bot
-  (`make BOT=1 PERSP=2 STATS=1`): a frame takes 3519 ticks at the median and 5155 at
-  worst, inside the 6000 that 30 frames a second allows. One SH-2 and no
-  shortcuts gave 5 frames a second; whole-cell steps 16; the second SH-2 28;
-  empty runs and cheaper pixel math 30 and up. ares counts instructions and
-  not memory waits, so hardware will differ.
-- For the number that counts, `make BOT=1 PERSP=2 STATS=1 deploy` puts a ROM on the
-  MiSTer that needs no pad: it starts itself, the bot plays, the camera
-  turns, and a yellow line reads `FPS`, `MEAN` and `WORST` (FRT ticks to
-  draw a frame; 3000 is one vblank). Not run on hardware yet.
+  colours in 64 bytes.
+- Measured on a MiSTer with `tools/mbench.sh` (a fixed dungeon, the camera
+  going once round it, 256 frames): a frame takes 4766 FRT ticks on average
+  and 5421 at worst at 160x112, inside the 6000 that 30 frames a second
+  allows. Focus mode takes 8224, about 20 frames a second.
+- What was learned getting there, each step timed on the MiSTer:
+  - It started at 6105. ares said 3307 for the same frames, so ares is for
+    checking pictures and counting instructions, not for frame rates.
+  - Writing to the framebuffer costs next to nothing, a third wide multiply
+    in the floor's pixel loop cost nothing that showed, and keeping the
+    depth tables in the cache gained 1.5 percent.
+  - Splitting the ray routine so its common path is 1.4K and not 2.3K
+    gained 2.8 percent.
+  - Sending a ray was the cost nobody was looking at: the code that works
+    out its direction ran from ROM, with a divide and two reciprocals done
+    by subroutine. From RAM, with the hardware divider, the frame went from
+    6105 to 4766.
+  - The two SH-2s slow each other: one drawing its half alone took 5303
+    where both together took 6105.
+  - `ares-headless --profile` and `tools/profile.py` found it. Measure
+    first.
 - Creatures are real voxel models here: `tools/bake_models.py --solid` turns
   the same two drawings into 8x8 columns of voxels, and the renderer stands
   them on the cells they are over, turned to face the way they last moved,
@@ -263,6 +275,14 @@ and its status line is rebuilt in a compact form from the same variables.
   `shots/bot/` and prints the level reached over time, frame times and the
   final screen. Ten emulated minutes take about five and reach level 19.
   Run plain `make` afterwards to get the playable ROM back.
+- `tools/mbench.sh` times the 3D view on a MiSTer: it builds `make BENCH=7`
+  (dungeon 7, the hero standing still, the camera going round him, so every
+  run draws the same 256 frames), starts it there, and brings back a
+  screenshot with the mean and worst frame on it. The same ROM twice gives
+  the same number to within a tick or two. `tools/mbench.sh out.png RES=3`
+  times another resolution.
+- `tools/profile.py prof.csv` turns `ares-headless --profile prof.csv` into
+  time by function; `tools/raysize.sh` lists the size of what runs from RAM.
 - Input scripts are `frame,button,value` lines. Boot takes about 2 seconds, so
   press Start no earlier than frame 150.
 
