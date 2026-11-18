@@ -30,6 +30,12 @@ make shot FRAMES=320 INPUT=keys.csv
 make deploy     # scp to a MiSTer (MISTER=root@host)
 ```
 
+Releases: every push to `main` is one. `.github/workflows/build.yml` builds
+the ROM with the prebuilt Marsdev toolchain, names it with `VERSION` and the
+next number after the newest tag (`0.1.0-alpha.3`), and publishes it with
+the commits since the last release as its notes. A push to `development` is
+built the same way and kept as a workflow artifact, not released.
+
 `make shot` needs the headless ares fork (`ARES=` overrides its path). The
 Makefile lists the rest: `PERSP=2` turns the camera by itself for measuring
 and `BOT=1` builds a ROM that plays itself.

@@ -1,0 +1,86 @@
+name: build
+
+# Every push to development is built, to show it still builds on a clean
+# machine. Every push to main is built and released: the next number after
+# the newest v<VERSION>.N tag, the ROM attached, and the commits since the
+# last release as its notes. VERSION holds the part before the number.
+on:
+  push:
+    branches: [main, development]
+    paths-ignore: ['**.md', 'shots/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # tags and releases
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # The prebuilt Marsdev toolchain this is built with.
+      MARSDEV_VER: v1.0.0-rc1
+      MARSDEV: ${{ github.workspace }}/.marsdev
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # the tags and the log between them
+
+      - name: Name the build
+        id: name
+        run: |
+          set -euo pipefail
+          BASE=$(cat VERSION)
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A commit is released once, however often this is run on it.
+          if [ -n "$(git tag --points-at HEAD --list "v${BASE}.*")" ]; then
+            echo "HEAD is already released"
+            echo "version=$(git tag --points-at HEAD --list "v${BASE}.*" | head -1 | cut -c2-)" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          LAST=$(git tag --list "v${BASE}.*" | sed "s/^v${BASE}\.//" | sort -n | tail -1)
+          echo "version=${BASE}.$(( ${LAST:-0} + 1 ))" >> "$GITHUB_OUTPUT"
+          echo "previous=${LAST:+v${BASE}.${LAST}}" >> "$GITHUB_OUTPUT"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the toolchain
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MARSDEV }}
+          key: marsdev-${{ env.MARSDEV_VER }}-linux-x86_64
+
+      - name: Install the toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: tools/get_marsdev.sh "$MARSDEV_VER" "$MARSDEV"
+
+      - name: Build the ROM
+        run: |
+          set -euo pipefail
+          V="${{ steps.name.outputs.version }}"
+          make VERSION="$V" MARSDEV="$MARSDEV"
+          grep -aq "$V" rom/voxelike.32x     # the title screen will say so
+          cp rom/voxelike.32x "voxelike-$V.32x"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voxelike-${{ steps.name.outputs.version }}
+          path: voxelike-*.32x
+
+      - name: Release
+        if: steps.name.outputs.release == 'true'
+        run: |
+          set -euo pipefail
+          V="${{ steps.name.outputs.version }}"
+          tools/release_notes.sh "$V" "${{ steps.name.outputs.previous }}" "voxelike-$V.32x" > notes.md
+          gh release create "v$V" "voxelike-$V.32x" --title "$V" --notes-file notes.md \
+            --prerelease --target "$GITHUB_SHA"
