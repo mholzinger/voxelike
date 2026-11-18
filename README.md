@@ -1,9 +1,8 @@
 # voxelike32x
 
-Rogue, as a 3D voxel world on the Sega 32X, in the spirit of 3D Dot Game
-Heroes. The original game runs untouched underneath; what you see is a
-dungeon of voxels and a camera that circles the hero, pulls back, and tips
-over into a flat view and out again.
+Rogue, as a 3D voxel world on the Sega 32X. The original game runs
+untouched underneath; what you see is a dungeon of voxels and a camera that
+circles the hero, pulls back, and tips over into a flat view and out again.
 
 Status: playable, early. Rogue 5.4.4 runs unmodified behind the renderers,
 with its messages, status, inventory, item prompts and tombstone on screen
@@ -339,3 +338,8 @@ elsewhere and keep their own terms.
 - `rogue/`: Rogue 5.4.4, unmodified (BSD 3-clause, Michael Toy, Ken Arnold,
   Glenn Wichman). See `rogue/UPSTREAM.md`. `rogue/LICENSE.TXT` must ship with
   any ROM release.
+
+## Inspiration
+
+- 3D Dot Game Heroes (Silicon Studio, 2009), for the idea of an old flat
+  game stood up in voxels. None of its art or assets are used here.
