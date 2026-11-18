@@ -67,6 +67,7 @@ RGFLAGS = -m2 -mb -O2 -fomit-frame-pointer -ffreestanding -Iport/include -Irogue
 #   make            the game: the 3D camera, with the flat view inside it
 #   make FLAT=1     the flat view alone, with no 3D renderer (sh_src/persp.c)
 #   make RES=n      start in resolution n: 0 160x112, 1 320x112, 2 320x224, 3 focus
+#                   (focus if not given)
 #   make STATS=1    show frames a second and the time to draw one
 #   make PERSP=2    turn the camera by itself, for measuring
 #   make BOT=1      a ROM that plays itself, for tools/botrun.py

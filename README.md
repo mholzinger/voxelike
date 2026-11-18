@@ -23,7 +23,7 @@ make            # rom/voxelike.32x: the game
 make FLAT=1     # the flat view alone, without the 3D renderer
 make STATS=1    # show frames a second and the time to draw one
 make BENCH=7    # the same 256 frames every run, for timing (tools/mbench.sh)
-make RES=3      # start in a resolution: 0 160x112, 1 320x112, 2 320x224, 3 focus
+make RES=0      # start in a resolution: 0 160x112, 1 320x112, 2 320x224, 3 focus (the default)
 make shot       # build, run headless in ares, write shots/latest.png
 make shot FRAMES=320 INPUT=keys.csv
 make deploy     # scp to a MiSTer (MISTER=root@host)
@@ -142,7 +142,8 @@ the hole; a fine ray starts 32 rows below the window, drawing nothing, so
 that whatever stands that near and reaches up into the window is in place
 by the first row that shows. Over two bot-played levels in ares a frame
 took 5671 ticks at the median and 7681 at worst, between 30 and 20 frames
-a second. `make RES=3` starts in it (RES is 0 to 3).
+a second. The game starts in it; `make RES=0` starts in 160x112 (RES is
+0 to 3).
 
 The flat view is the fixed renderer itself, at its 60 frames a second.
 Getting there is one continuous move: the focal length grows from 128 to
@@ -283,8 +284,8 @@ and its status line is rebuilt in a compact form from the same variables.
   (dungeon 7, the hero standing still, the camera going round him, so every
   run draws the same 256 frames), starts it there, and brings back a
   screenshot with the mean and worst frame on it. The same ROM twice gives
-  the same number to within a tick or two. `tools/mbench.sh out.png RES=3`
-  times another resolution.
+  the same number to within a tick or two. `tools/mbench.sh out.png RES=0`
+  times another resolution; without RES it is focus, as the game starts.
 - `tools/profile.py prof.csv` turns `ares-headless --profile prof.csv` into
   time by function; `tools/raysize.sh` lists the size of what runs from RAM.
 - Input scripts are `frame,button,value` lines. Boot takes about 2 seconds, so

@@ -3,7 +3,7 @@
 # every run), put it on the MiSTer, start it, and bring back a screenshot
 # with the yellow line of results on it. Then put the game's ROM back in
 # rom/.
-#   tools/mbench.sh [out.png] [extra make arguments, e.g. RES=3]
+#   tools/mbench.sh [out.png] [extra make arguments, e.g. RES=0]
 # MISTER names the machine (default root@mister.tv.local), SEED the dungeon.
 set -e
 OUT=${1:-shots/mbench.png}

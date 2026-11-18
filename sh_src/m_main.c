@@ -82,7 +82,7 @@ uint16_t perf_fps, perf_mean, perf_worst;
 static int cam_pull;       /* 0 close in .. 256 pulled back */
 static int cam_flat;       /* 0 full perspective .. 256 none */
 #ifndef PERSP_RES
-#define PERSP_RES PERSP_RES_COARSE
+#define PERSP_RES PERSP_RES_FOCUS
 #endif
 int cam_res = PERSP_RES;   /* PERSP_RES_x; make RES=n picks the one to start in */
 uint32_t cam_res_at;       /* vblank it was last changed on, 0 for never */
