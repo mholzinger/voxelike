@@ -72,6 +72,7 @@ static struct {
  * two scanlines by the line table. */
 #define STRIDE    320
 typedef uint16_t __attribute__((may_alias)) pair_t;
+typedef uint32_t __attribute__((may_alias)) quad_t;
 
 /* The 32X does not store a zero written to its framebuffer as a byte, so
  * that sprites can be drawn with holes in them. Nothing is CRAM index 1,
@@ -509,6 +510,13 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
             uint32_t s = INV(t_out);
             int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
             if (top < YEND) top = YEND;
+            /* A focus ray's run-up is drawn only to find what hides what;
+             * most of it is this, and this need not be drawn at all. */
+            if (FOCUS && ybuf > FOCUS_Y1 && top < ybuf) {
+                int to = top > FOCUS_Y1 ? top : FOCUS_Y1;
+                dst -= (ybuf - to) * STRIDE;
+                ybuf = to;
+            }
             if (top < ybuf) {
                 /* The ray is over the voxel at eye + direction * depth, and
                  * the depth on a row is row_t's for it times how far below
@@ -643,26 +651,28 @@ static void columns(int first) {
          * over each coarse one, looking where columns 2 * col and
          * 2 * col + 1 of 320 would. Each kind of ray is its own code, and
          * the cache holds about one of them, so all of one are sent before
-         * any of the other. */
-        for (int col = first; col < VIEW_W; col += 2) {
+         * any of the other. Here a CPU's share is every other pair of
+         * columns: a pair is one long word, which halves the copying. */
+        for (int col = 2 * first; col < VIEW_W; col += 4) {
             cast(ray_around, pixels + (2 * VIEW_H - 2) * STRIDE + col * 2, col);
+            cast(ray_around, pixels + (2 * VIEW_H - 2) * STRIDE + col * 2 + 2, col + 1);
             if (col >= FOCUS_X0 / 2 && col < FOCUS_X1 / 2) continue;
             uint8_t *at = pixels + FOCUS_Y0 * STRIDE + col * 2;
             for (int n = (FOCUS_Y1 - FOCUS_Y0) / 2; n; n--) {
-                *(pair_t *)(at + STRIDE) = *(pair_t *)at;
+                *(quad_t *)(at + STRIDE) = *(quad_t *)at;
                 at += 2 * STRIDE;
             }
         }
-        for (int col = FOCUS_X0 / 2 + first; col < FOCUS_X1 / 2; col += 2) {
-            /* A fine ray draws its run-up too, over what is below the
+        for (int col = FOCUS_X0 / 2 + 2 * first; col < FOCUS_X1 / 2; col += 4) {
+            /* A fine ray draws some of its run-up, over what is below the
              * window. That is kept, and put back. */
-            uint16_t kept[FOCUS_RUNUP / 2];
+            uint32_t kept[FOCUS_RUNUP / 2];
             uint8_t *below = pixels + FOCUS_Y1 * STRIDE + col * 2;
-            for (int k = 0; k < FOCUS_RUNUP / 2; k++) kept[k] = *(pair_t *)(below + 2 * k * STRIDE);
-            for (int fine = 2 * col; fine < 2 * col + 2; fine++) {
+            for (int k = 0; k < FOCUS_RUNUP / 2; k++) kept[k] = *(quad_t *)(below + 2 * k * STRIDE);
+            for (int fine = 2 * col; fine < 2 * col + 4; fine++) {
                 cast(ray_focus, pixels + (FOCUS_START - 1) * STRIDE + fine, VIEW_W + fine);
             }
-            for (int k = 0; k < FOCUS_RUNUP / 2; k++) *(pair_t *)(below + 2 * k * STRIDE) = kept[k];
+            for (int k = 0; k < FOCUS_RUNUP / 2; k++) *(quad_t *)(below + 2 * k * STRIDE) = kept[k];
         }
         break;
     }
