@@ -504,11 +504,13 @@ static int command_key(void) {
 			text_commit();
 		}
 #endif
-		if(IDLE_TURN && MARS_SYS_COMM12 - idle_since >= IDLE_TURN) {
+#if IDLE_TURN
+		if(MARS_SYS_COMM12 - idle_since >= IDLE_TURN) {
 			rogue_idle(1);
 			plat_step_frames = IDLE_TURN;
 			return '.';
 		}
+#endif
 		if(in.pressed & SEGA_CTRL_B) return 's';      /* search */
 		if(in.pressed & SEGA_CTRL_C) return '.';      /* rest a turn */
 		if(in.pressed & SEGA_CTRL_START) {
