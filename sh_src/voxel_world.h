@@ -23,8 +23,20 @@ typedef struct {
     uint8_t flash;         /* CRAM index it is flashing, or 0 */
 } vox_creature_t;
 
+/* Take a column from a model turned to a creature's facing. */
+static inline const vcol_t *vox_model_column(const vcol_t model[CELL][CELL],
+                                             int face, int x, int y) {
+    switch (face) {
+    default: return &model[x][y];
+    case 1:  return &model[y][CELL - 1 - x];
+    case 2:  return &model[CELL - 1 - x][CELL - 1 - y];
+    case 3:  return &model[CELL - 1 - y][x];
+    }
+}
+
 /* The i'th loose voxel of something that died: where it is, in sixteenths
- * of a voxel, and its CRAM index. 0 past the last one. */
+ * of a voxel, and its CRAM index. Returns 2 for a hero chunk, 1 for a
+ * regular fragment, or 0 past the last one. */
 int vox_piece(int i, int *x, int *y, int *z, unsigned *colour);
 
 /* The i'th creature on screen. 0 past the last one. */

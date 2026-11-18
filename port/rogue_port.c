@@ -370,10 +370,35 @@ __wrap_attack(THING *mp)
     return __real_attack(mp);
 }
 
+/* Play the fatal blow while Rogue's dungeon still occupies its screen. */
+extern void __real_death(char monst);
+extern void plat_death(void);
+
+void
+__wrap_death(char monst)
+{
+    plat_death();
+    __real_death(monst);
+}
+
 unsigned long
 rogue_attacker(void)
 {
     return n_attackers > 0 ? (unsigned long) attackers[--n_attackers] : 0;
+}
+
+/*
+ * rogue_gear:
+ *	Which armor is worn and which weapon wielded, as Rogue numbers
+ *	them (LEATHER.., MACE..), or -1. Anything can be wielded; only a
+ *	weapon counts as one here.
+ */
+void
+rogue_gear(int *armor, int *weapon)
+{
+    *armor = cur_armor != NULL ? cur_armor->o_which : -1;
+    *weapon = cur_weapon != NULL && cur_weapon->o_type == WEAPON
+	? cur_weapon->o_which : -1;
 }
 
 /*
@@ -404,36 +429,68 @@ rogue_cursor_row(void)
     return stdscr->_cury;
 }
 
-/*
- * rogue_status:
- *	The stats of status(), packed to fit a 40 column screen.
- */
 void
-rogue_status(char *buf)
+rogue_status(rogue_status_t *status)
 {
-    static char *state_name[] =
-    {
-	"", "Hungry", "Weak", "Faint"
+    *status = (rogue_status_t){
+	.depth = level, .gold = purse, .hp = pstats.s_hpt, .hp_max = max_hp,
+	.strength = pstats.s_str,
+	.armor = 10 - (cur_armor != NULL ? cur_armor->o_arm : pstats.s_arm),
+	.rank = pstats.s_lvl, .experience = pstats.s_exp, .hunger = hungry_state,
     };
+}
 
-    sprintf(buf, "Lv%d $%d Hp%d/%d St%d Ac%d Xp%d/%ld %s",
-	level, purse, pstats.s_hpt, max_hp, pstats.s_str,
-	10 - (cur_armor != NULL ? cur_armor->o_arm : pstats.s_arm),
-	pstats.s_lvl, (long) pstats.s_exp, state_name[hungry_state]);
+/*
+ * get_item, watched:
+ *	Rogue asks for something from the pack with a kind in mind, and
+ *	its own list (the '*' answer) shows only that kind. The linker
+ *	sends its calls here (-Wl,--wrap=get_item) so that the port's
+ *	list can do the same. Anything can be wielded or thrown, so those
+ *	two show everything.
+ */
+static int pick_type;
+
+extern THING *__real_get_item(char *purpose, int type);
+
+THING *
+__wrap_get_item(char *purpose, int type)
+{
+    THING *obj;
+
+    pick_type = strcmp(purpose, "wield") == 0 || strcmp(purpose, "throw") == 0
+	? 0 : type;
+    obj = __real_get_item(purpose, type);
+    pick_type = 0;
+    return obj;
+}
+
+/* The rule of Rogue's inventory(). */
+static int
+fits(THING *obj)
+{
+    if (pick_type == 0 || obj->o_type == pick_type)
+	return TRUE;
+    if (pick_type == CALLABLE)
+	return obj->o_type != FOOD && obj->o_type != AMULET;
+    if (pick_type == R_OR_S)
+	return obj->o_type == RING || obj->o_type == STICK;
+    return FALSE;
 }
 
 /*
  * rogue_pack:
- *	Describe the index'th thing in the pack as "a) name", at most
- *	max characters. Returns its pack letter, or 0 past the end.
+ *	Describe the index'th thing in the pack that fits what Rogue is
+ *	asking for as "a) name", at most max characters. Returns its pack
+ *	letter, or 0 past the end.
  */
 int
 rogue_pack(int index, char *buf, int max)
 {
     THING *obj;
 
-    for (obj = pack; obj != NULL && index > 0; obj = next(obj))
-	index--;
+    for (obj = pack; obj != NULL; obj = next(obj))
+	if (fits(obj) && index-- == 0)
+	    break;
     if (obj == NULL)
 	return 0;
     sprintf(buf, "%c) %.*s", obj->o_packch, max - 3, inv_name(obj, FALSE));

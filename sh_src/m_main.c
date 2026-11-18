@@ -3,6 +3,7 @@
 #include "text.h"
 #include "persp.h"
 #include "sfx.h"
+#include "splash.h"
 #include "sh2zam/sh2zam.h"
 #include "../port/plat.h"
 #include "version.h"
@@ -57,6 +58,7 @@ __attribute__((used)) volatile uint16_t game_render_ticks;
 
 #ifdef PERSP
 uint16_t persp_yaw = 0xC000;
+int camera_yaw_settled = 1;
 
 /* For the HUD of a measuring build. */
 uint16_t perf_fps, perf_mean, perf_worst;
@@ -66,7 +68,7 @@ uint16_t perf_fps, perf_mean, perf_worst;
  *   Y tapped        swing behind the hero, so up on the pad is the way he faces
  *   Y tapped twice  swing back to north
  *   Y held          tip the view over into the flat one, or back out of it
- *   (nothing)       it follows the hero by itself: see follow()
+ *   (nothing)       it swings if a wall hides the hero
  *   MODE held       pull back to show more, for as long as it is held
  *   MODE tapped     next picture resolution: 160x112, 320x112, 320x224, and
  *                   fine around the hero with the rest coarse
@@ -89,41 +91,18 @@ int cam_res = PERSP_RES;   /* PERSP_RES_x; make RES=n picks the one to start in 
 uint32_t cam_res_at;       /* vblank it was last changed on, 0 for never */
 static int flat_wanted;
 
-/* The camera that looks after itself.
- *
- * Up on the pad means away from the camera, so a camera that turns while
- * the player is steering takes the steering out of his hands. It therefore
- * turns at only two moments. When the hero walks into another room, or out
- * into the passages, it takes up a three-quarter view of the way he came
- * in: within an eighth of a turn of straight behind him, wherever in that
- * the least stands in the way and the swing is shortest, which is often no
- * swing at all. And when he walks in behind a wall on the camera's side
- * and cannot be seen whole, it goes to the nearest place he can be seen
- * from. Inside a room it otherwise stays exactly where it is.
- *
- * Even then it waits its moment. While the player holds a direction and
- * the hero is getting somewhere, the camera stays as it is, however many
- * doors he goes through: it moves when the pad is let go, or when he has
- * walked as far as that direction will take him (the passage turns, there
- * is a wall) and has stood against it for STUCK vblanks. Letting go for
- * less than TAP_GAP is not letting go: that is walking by taps. Then it
- * looks at where he has ended up and takes its view from that. Turning it
- * by hand holds all this off for HANDS_OFF vblanks.
- *
- * What up means is kept steadier still: see pad_turn_latch(). */
-#define STUCK         24
+/* Allow a short pause between taps before automatic wall recovery. */
 #define TAP_GAP       20
-#define THREE_QUARTER 0x2000
 #define HANDS_OFF     180
 #define TALL          5      /* voxels over the hero's floor that hide him */
 #define HIDDEN        3      /* hidden_from() at which he cannot be seen whole */
 
 /* How much stands in the way of seeing the hero from the direction yaw
  * looks along: the cells beside him on the eye's side, and one farther. */
-static int hidden_from(uint16_t yaw) {
+static int hidden_at(int cx, int cy, uint16_t yaw) {
 	static const int16_t around[] = { 0, 0x1800, -0x1800 };
-	int floor = vox_height_at(vox_hero_cx, vox_hero_cy) - 1;
-	int hx = vox_hero_cx * CELL + CELL / 2, hy = vox_hero_cy * CELL + CELL / 2;
+	int floor = vox_height_at(cx, cy) - 1;
+	int hx = cx * CELL + CELL / 2, hy = cy * CELL + CELL / 2;
 	int score = 0;
 
 	for(unsigned i = 0; i < sizeof(around) / sizeof(around[0]); i++) {
@@ -143,17 +122,20 @@ static int hidden_from(uint16_t yaw) {
 	return score;
 }
 
-/* Of the views `step` apart from `from - reach` to `from + reach`, the one
- * the hero is least hidden from, and of those the shortest swing away. */
-static uint16_t best_view(uint16_t from, int reach, int step) {
-	uint16_t best_yaw = persp_yaw;
-	int best = 0x7FFFFFFF;
+static int hidden_from(uint16_t yaw) {
+	return hidden_at(vox_hero_cx, vox_hero_cy, yaw);
+}
 
-	for(int off = -reach; off <= reach; off += step) {
-		uint16_t yaw = (uint16_t)(from + off);
-		int16_t swing = (int16_t)(yaw - persp_yaw);
-		if(swing < 0) swing = (int16_t)-swing;
-		/* Being hidden counts for far more than having to move. */
+/* Prefer less obstruction, then the shortest swing. Keep the current
+ * angle as an option so recovery can leave it alone if no view improves it. */
+static uint16_t best_view(uint16_t first, int count, int step) {
+	uint16_t best_yaw = persp_yaw;
+	int best = hidden_from(persp_yaw) * 1024;
+
+	for(int i = 0; i < count; i++) {
+		uint16_t yaw = (uint16_t)(first + i * step);
+		int swing = (int16_t)(yaw - persp_yaw);
+		if(swing < 0) swing = -swing;
 		int score = hidden_from(yaw) * 1024 + (swing >> 6);
 		if(score < best) {
 			best = score;
@@ -161,43 +143,6 @@ static uint16_t best_view(uint16_t from, int reach, int step) {
 		}
 	}
 	return best_yaw;
-}
-
-/* Watch the hero's steps, once a frame, and note when the camera has a
- * reason to move: he is somewhere new, or hidden. */
-enum { STAY, ENTERED, HID };
-static int reason;
-static uint16_t heading;           /* the yaw that looks along his last step */
-
-static void watch(void) {
-	static const uint16_t heading_of[3][3] = {
-		{ 0xA000, 0xC000, 0xE000 },
-		{ 0x8000, 0,      0x0000 },
-		{ 0x6000, 0x4000, 0x2000 },
-	};
-	static int was_cx = -1, was_cy, was_room = -2;
-	int dx = vox_hero_cx - was_cx, dy = vox_hero_cy - was_cy;
-	int first = was_cx < 0;
-
-	was_cx = vox_hero_cx;
-	was_cy = vox_hero_cy;
-	if(first) was_room = rogue_room_id();   /* where the game starts is not news */
-	if(first || (dx == 0 && dy == 0)) return;
-
-	int room = rogue_room_id();
-	int entered = (room != was_room);
-	was_room = room;
-	if(dx < -1 || dx > 1 || dy < -1 || dy > 1) return;   /* stairs, a teleport */
-
-	heading = heading_of[dy + 1][dx + 1];
-	if(entered) reason = ENTERED;
-	else if(reason == STAY && hidden_from(persp_yaw) >= HIDDEN) reason = HID;
-}
-
-/* The view to take up for the reason noted, from where the hero is now. */
-static uint16_t view_for(int why) {
-	if(why == ENTERED) return best_view(heading, THREE_QUARTER, 0x1000);
-	return best_view(persp_yaw, 0x8000 - 0x1000, 0x1000);
 }
 
 static void camera_buttons(void) {
@@ -208,30 +153,28 @@ static void camera_buttons(void) {
 	uint16_t pad = MARS_SYS_COMM8;
 	uint32_t now = MARS_SYS_COMM12;
 
-	if(pad & (SEGA_CTRL_X | SEGA_CTRL_Y | SEGA_CTRL_Z)) hands_at = now ? now : 1;
-	{
-		/* Getting somewhere: a direction is held and it is not long since
-		 * the hero last changed cell or was in the middle of something. */
-		static uint32_t moved_at;
-		static int at_cx, at_cy;
-		if(vox_hero_cx != at_cx || vox_hero_cy != at_cy || vox_hero_busy) moved_at = now;
-		at_cx = vox_hero_cx;
-		at_cy = vox_hero_cy;
-		/* Between the taps of someone walking a step at a time counts too. */
-		static uint32_t pushed_at;
-		int pushed = pad & (SEGA_CTRL_UP | SEGA_CTRL_DOWN | SEGA_CTRL_LEFT | SEGA_CTRL_RIGHT);
-		if(pushed) pushed_at = now ? now : 1;
-		int walking = pushed ? now - moved_at < STUCK
-		                     : pushed_at && now - pushed_at < TAP_GAP;
-		int quiet = !hands_at || now - hands_at >= HANDS_OFF;
-
-		watch();
-		if(!quiet || flat_wanted || PERSP != 1) {
-			reason = STAY;
-		} else if(reason != STAY && !walking) {
-			target = view_for(reason);
-			reason = STAY;
-			if(target != persp_yaw) swinging = gently = 1;
+	static uint32_t pushed_at;
+	static int recovery_x, recovery_y, recovery_depth;
+	int direction = pad & (SEGA_CTRL_UP | SEGA_CTRL_DOWN | SEGA_CTRL_LEFT | SEGA_CTRL_RIGHT);
+	int manual = pad & (SEGA_CTRL_X | SEGA_CTRL_Y | SEGA_CTRL_Z);
+	if(direction) pushed_at = now ? now : 1;
+	if(manual) {
+		hands_at = now ? now : 1;
+		if(gently) swinging = gently = 0;
+	}
+	int resting = !direction && !vox_hero_busy && (!pushed_at || now - pushed_at >= TAP_GAP);
+	int quiet = !hands_at || now - hands_at >= HANDS_OFF;
+	if(PERSP == 1 && quiet && resting && !flat_wanted && (!swinging || gently)) {
+		int depth = rogue_depth();
+		/* If movement interrupted a swing, see what hides the hero
+		 * from the new tile before resuming it. */
+		if(!swinging || recovery_x != vox_hero_cx || recovery_y != vox_hero_cy ||
+		   recovery_depth != depth) {
+			target = hidden_from(persp_yaw) >= HIDDEN ? best_view(NORTH, 4, 0x4000) : persp_yaw;
+			swinging = gently = target != persp_yaw;
+			recovery_x = vox_hero_cx;
+			recovery_y = vox_hero_cy;
+			recovery_depth = depth;
 		}
 	}
 
@@ -272,7 +215,7 @@ static void camera_buttons(void) {
 		swinging = 1;
 		gently = 0;
 	}
-	if(swinging) {
+	if(swinging && (!gently || resting)) {
 		int16_t d = (int16_t)(target - persp_yaw);   /* the short way round */
 		int most = SWING;
 		if(gently) {
@@ -283,8 +226,9 @@ static void camera_buttons(void) {
 		if(d > most) d = (int16_t)most;
 		if(d < -most) d = (int16_t)-most;
 		persp_yaw += d;
-		if(persp_yaw == target) swinging = 0;
+		if(persp_yaw == target) swinging = gently = 0;
 	}
+	camera_yaw_settled = !swinging && !manual;
 	cam_flat = clamp(cam_flat + (flat_wanted ? TIP : -TIP), 0, 256);
 	cam_pull = clamp(cam_pull + (pulling ? 24 : -24), 0, 256);
 }
@@ -321,22 +265,112 @@ static void sounds(void) {
 	sfx_flush();
 }
 
+static void load_dungeon_screen(int stage_defeat) {
+	int room[4];
+	plat_screen_changed = 0;
+	vox_load_screen(rogue_screen(), &source, rogue_room(room) ? room : 0,
+	                rogue_depth(), plat_step_frames, stage_defeat);
+	for(uint32_t id; (id = rogue_attacker()) != 0; ) vox_jab(id);
+#ifdef PERSP
+	persp_sync();
+#endif
+}
+
+#ifdef PERSP
+static int update_hero_gear(void) {
+	int armor, weapon;
+	rogue_gear(&armor, &weapon);
+#ifdef SHOW_ARMOR
+	armor = SHOW_ARMOR;
+#endif
+#ifdef SHOW_WEAPON
+	weapon = SHOW_WEAPON;
+#endif
+	int dressed = armor != vox_hero_armor || weapon != vox_hero_weapon;
+	vox_hero_armor = armor;
+	vox_hero_weapon = weapon;
+	return dressed;
+}
+
+/* Favor a three-quarter side view with both fighters clear of walls. */
+static uint16_t defeat_yaw(int x, int y, int dx, int dy) {
+	uint16_t best_yaw = persp_yaw;
+	int best = INT32_MAX;
+	int span = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+	if(!span) return best_yaw;
+	for(unsigned i = 0; i < 16; i++) {
+		uint16_t yaw = (uint16_t)(i * 0x1000);
+		sh2z_fx_t sin, cos;
+		sh2z_sincos(yaw, &sin, &cos);
+		int depth = (dx * cos + dy * sin) >> 8;
+		if(depth < 0) depth = -depth;
+		int swing = (int16_t)(yaw - persp_yaw);
+		if(swing < 0) swing = -swing;
+		int cover = hidden_from(yaw) + hidden_at(x / CELL, y / CELL, yaw);
+		/* A 22.5-degree offset from broadside shows depth and the gap
+		 * between the fighters. A clear view matters more than the angle. */
+		int profile = depth / span - 98;
+		if(profile < 0) profile = -profile;
+		int score = cover * 1024 + profile * 3 + (swing >> 8);
+		if(score < best) {
+			best = score;
+			best_yaw = yaw;
+		}
+	}
+	return best_yaw;
+}
+
+/* Use a private camera angle and return to the gameplay view before
+ * reading the next command. Rogue has already resolved the killing hit. */
+static void play_defeat(int enemy_x, int enemy_y) {
+	enum { APPROACH = 15, IMPACT = 21, RETREAT = 33, END = 49, ZOOM = 144 };
+	int hx = vox_hero_x + CELL / 2, hy = vox_hero_y + CELL / 2;
+	int dx = enemy_x - hx, dy = enemy_y - hy;
+	int swing = (int16_t)(defeat_yaw(enemy_x, enemy_y, dx, dy) - persp_yaw);
+	int previous = 0;
+	uint32_t start = MARS_SYS_COMM12;
+	update_hero_gear();
+	persp_creatures(0);
+	for(;;) {
+		int t = clamp((int)(MARS_SYS_COMM12 - start), 0, END);
+		if(t >= IMPACT && previous < IMPACT) {
+			vox_release_defeat();
+			sounds();
+		}
+		if(t >= IMPACT) {
+			int steps = t - (previous < IMPACT ? IMPACT : previous);
+			while(steps-- > 0) vox_animate();
+			persp_creatures(0);
+		}
+		int p = clamp(t, 0, APPROACH) * 256 / APPROACH
+		      - clamp(t - RETREAT, 0, END - RETREAT) * 256 / (END - RETREAT);
+		int eased = ((p * p >> 8) * (768 - 2 * p)) >> 8;
+		uint16_t yaw = (uint16_t)(persp_yaw + swing * eased / 256);
+		int x = hx + (dx * eased / 512), y = hy + (dy * eased / 512);
+		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, yaw,
+		             -ZOOM * eased / 256, 0, cam_res);
+		swapBuffers();
+		if(t == END) break;
+		previous = t;
+	}
+	anim_tick = MARS_SYS_COMM12;
+}
+
+#endif
+
 /* One step of the dungeon display, one vblank long when it keeps up: fold
  * in Rogue's latest screen, move the camera toward the hero, bring the
  * hidden framebuffer up to date and show it. */
 void game_frame(void) {
-	if(plat_screen_changed) {
-		int room[4];
-		plat_screen_changed = 0;
-		vox_load_screen(rogue_screen(), &source, rogue_room(room) ? room : 0,
-		                rogue_depth(), plat_step_frames);
-		for(uint32_t id; (id = rogue_attacker()) != 0; ) vox_jab(id);
+	int stage_defeat = 0;
 #ifdef PERSP
-		persp_sync();
+	int manual = MARS_SYS_COMM8 & (SEGA_CTRL_X | SEGA_CTRL_Y | SEGA_CTRL_Z | SEGA_CTRL_MODE);
+	stage_defeat = PERSP == 1 && !manual && !cam_flat && !cam_pull && !flat_wanted &&
+	               camera_yaw_settled;
 #endif
-	}
+	if(plat_screen_changed) load_dungeon_screen(stage_defeat);
 	if(blanked) {
-		vox_palette(1);
+		vox_palette(VOX_FULL_LIGHT);
 		blanked = 0;
 		anim_tick = MARS_SYS_COMM12;
 	}
@@ -377,9 +411,13 @@ void game_frame(void) {
 	}
 	was_flat = is_flat;
 
+	int enemy_x, enemy_y;
+	if(vox_defeat_target(&enemy_x, &enemy_y)) play_defeat(enemy_x, enemy_y);
 	if(!is_flat) {
-		/* While anything moves, and for the frame it comes to rest. */
-		if(vox_moving || settle) persp_creatures();
+		/* While anything moves, and for the frame it comes to rest, and
+		 * when the hero has changed what he wears or holds. */
+		int dressed = update_hero_gear();
+		if(vox_moving || settle || dressed) persp_creatures(0);
 		settle = vox_moving;
 
 		/* Flat, the picture is centred where the fixed view's camera is,
@@ -430,6 +468,75 @@ void game_frame(void) {
 	shown_y = cam_y;
 }
 
+/* Rogue still has its dungeon screen here, including the fatal attacker.
+ * Play the scene on the vblank clock without taking any more game turns. */
+void game_death(void) {
+	enum { PUSH = 24, BURST = 32, RETREAT = 59, END = 92 };
+#ifdef PERSP
+	update_hero_gear();
+	int start_pull = cam_pull;
+	int start_flat = cam_flat;
+#endif
+	load_dungeon_screen(0);
+	vox_hero_clear_flash();
+#ifdef PERSP
+	persp_creatures(0);
+#endif
+	text_begin();
+	text_commit();
+	vox_palette(VOX_FULL_LIGHT);
+#ifdef PERSP
+	int hx = vox_hero_cx * CELL + CELL / 2, hy = vox_hero_cy * CELL + CELL / 2;
+	int fx = cam_x + VIEW_W / 2, fy = cam_y + VIEW_H / 2 + 4;
+#else
+	int x = clamp(vox_hero_x + CELL / 2 - VIEW_W / 2, CAM_X_MIN, CAM_X_MAX);
+	int y = clamp(vox_hero_y + CELL / 2 - VIEW_H / 2 - 4, CAM_Y_MIN, CAM_Y_MAX);
+#endif
+	uint32_t start = MARS_SYS_COMM12;
+	int advanced = PUSH - 4;
+	int light = VOX_FULL_LIGHT;
+	for(;;) {
+		int t = clamp((int)(MARS_SYS_COMM12 - start), 0, END);
+#ifdef PERSP
+		int previous = advanced;
+#endif
+		while(advanced < t) {
+			if(++advanced == BURST) {
+#ifdef PERSP
+				persp_hero_shatter();
+#else
+				vox_hero_shatter(0);
+#endif
+				vox_events |= VOX_BURST;
+			}
+			vox_animate();
+		}
+		if(t >= PUSH - 4) sounds();
+#ifdef PERSP
+		int push = clamp(t, 0, PUSH);
+		int retreat = clamp(t - RETREAT, 0, END - RETREAT);
+		/* At -137, the camera distance is 86 voxels versus the normal
+		 * 128, putting the hero about 50 percent larger in the frame. */
+		int pull = start_pull + (-137 - start_pull) * push / PUSH
+		         + 393 * retreat * retreat / ((END - RETREAT) * (END - RETREAT));
+		int flat = start_flat * (PUSH - push) / PUSH;
+		int x = hx + ((fx - hx) * flat >> 8), y = hy + ((fy - hy) * flat >> 8);
+		if(advanced != previous) persp_creatures(0);
+		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, persp_yaw, pull, flat, cam_res);
+#else
+		vox_prepare((uint16_t *)&MARS_FRAMEBUFFER, currentFB, x, y);
+#endif
+		int next_light = VOX_FULL_LIGHT * clamp(END - t, 0, END - RETREAT) / (END - RETREAT);
+		if(next_light != light) {
+			vox_palette(next_light);
+			light = next_light;
+		}
+		swapBuffers();
+		if(t == END) break;
+	}
+	blanked = 1;
+}
+
 /* One step of a text page: the dungeon picture goes black behind it. */
 void game_blank(void) {
 	if(!blanked) {
@@ -438,6 +545,99 @@ void game_blank(void) {
 	}
 	sfx_flush();
 	wait_vblank();
+}
+
+static void title_screen(void) {
+	const unsigned last = splash_title_frame();
+	splash_palette_init();
+#if !defined(BOT) && !defined(BENCH)
+	uint32_t start = MARS_SYS_COMM12;
+	unsigned shown = last;
+	while(!(MARS_SYS_COMM8 & SEGA_CTRL_START)) {
+		unsigned frame = (MARS_SYS_COMM12 - start) / SPLASH_FRAME_TICKS;
+		if(frame >= last) break;
+		if(frame == shown) {
+			wait_vblank();
+			continue;
+		}
+		splash_draw(frame);
+		swapBuffers();
+		shown = frame;
+	}
+#endif
+	splash_draw(last);
+	swapBuffers();
+
+	text_begin();
+	text_put(14, 18, "PRESS START", -1, TEXT_WHITE, 0);
+	text_put((TEXT_W - (int)sizeof VERSION + 1) / 2, 24, VERSION, -1, TEXT_WHITE, 0);
+	text_commit();
+#if defined(BOT) || defined(BENCH)
+	/* Nobody is there to press it. */
+	for(uint32_t t = MARS_SYS_COMM12; MARS_SYS_COMM12 - t < 120 && !(MARS_SYS_COMM8 & SEGA_CTRL_START); );
+#else
+	/* A press that skipped the animation must be released before playing. */
+	while(MARS_SYS_COMM8 & SEGA_CTRL_START) wait_vblank();
+	while(!(MARS_SYS_COMM8 & SEGA_CTRL_START)) wait_vblank();
+#endif
+}
+
+/* Start has already seeded and generated Rogue's first level by this point. */
+static void enter_dungeon(void) {
+	text_begin();
+	text_commit();
+
+#if !defined(BOT) && !defined(BENCH)
+	unsigned first = splash_title_frame();
+	unsigned last = splash_last_frame();
+	uint32_t start = MARS_SYS_COMM12;
+	for(unsigned frame = first + 1; frame <= last; frame++) {
+		while(MARS_SYS_COMM12 - start < (frame - first) * SPLASH_FRAME_TICKS)
+			wait_vblank();
+		splash_draw(frame);
+		swapBuffers();
+	}
+#endif
+
+#if defined(PERSP) && !defined(BOT) && !defined(BENCH)
+	enum { DIVE = 27, RISE = 46, HOLD = 8, PULL_BACK = 28, CLOSEST = -200 };
+	const int pull_at = DIVE + RISE + HOLD;
+	const int end = pull_at + PULL_BACK;
+	update_hero_gear();
+	load_dungeon_screen(0);
+	persp_yaw = best_view((uint16_t)(persp_yaw - 0x7000), 15, 0x1000);
+
+	int x = vox_hero_x + CELL / 2, y = vox_hero_y + CELL / 2;
+	int height = persp_hero_height();
+	int last_buried = -1;
+	vox_palette(VOX_FULL_LIGHT);
+	uint32_t entered = MARS_SYS_COMM12;
+	for(;;) {
+		int t = clamp((int)(MARS_SYS_COMM12 - entered), 0, end);
+		int rise = clamp(t - DIVE, 0, RISE);
+		int buried = height - rise * height / RISE;
+		int pull = CLOSEST;
+		if(t < DIVE) {
+			pull = 144 + (CLOSEST - 144) * t * t / (DIVE * DIVE);
+		} else if(t > pull_at) {
+			int p = (t - pull_at) * 256 / PULL_BACK;
+			int eased = ((p * p >> 8) * (768 - 2 * p)) >> 8;
+			pull = CLOSEST * (256 - eased) / 256;
+		}
+		if(buried != last_buried) {
+			persp_creatures(buried);
+			last_buried = buried;
+		}
+		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, persp_yaw, pull, 0, cam_res);
+		swapBuffers();
+		if(t == end) break;
+	}
+	anim_tick = MARS_SYS_COMM12;
+#else
+	/* Splash indices stay black until the normal dungeon draw. */
+	for(unsigned i = 0; i < 8; i++)
+		(&MARS_CRAM)[i] = 0;
+#endif
 }
 
 /* Primary CPU main loop */
@@ -452,19 +652,9 @@ int m_main(void) {
 #endif
 
 	/* The moment Start goes down seeds the dungeon. */
-	text_begin();
-	text_put(14, 10, "VOXELIKE32X", -1, TEXT_YELLOW, 0);
-	text_put(14, 14, "PRESS START", -1, TEXT_WHITE, 0);
-	text_put((TEXT_W - (int)sizeof VERSION + 1) / 2, 24, VERSION, -1, TEXT_WHITE, 0);
-	text_commit();
-#if defined(BOT) || defined(BENCH)
-	/* Nobody is there to press it. */
-	for(uint32_t t = MARS_SYS_COMM12; MARS_SYS_COMM12 - t < 120 && !(MARS_SYS_COMM8 & SEGA_CTRL_START); );
-#else
-	while(!(MARS_SYS_COMM8 & SEGA_CTRL_START));
-#endif
-
+	title_screen();
 	rogue_start();
+	enter_dungeon();
 	rogue_play();   /* draws and reads the pad from inside plat_getkey */
 	return 0;
 }

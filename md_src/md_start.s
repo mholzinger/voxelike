@@ -163,6 +163,14 @@ _start:
 		move.l	d0,(a2)					/* set tile line */
 		dbra	d2,8b
 
+	;// Tiles 192 and up: icons, frame and health meter.
+		lea		hud_tiles(pc),a0
+		lea		hud_tiles_end(pc),a3
+	9:
+		move.l	(a0)+,(a2)
+		cmpa.l	a3,a0
+		bne.s	9b
+
 		move.l	#0xC0000000,(a1)		/* write CRAM address 0 */
 		move.l	#0x00000CCC,(a2)		/* entry 0 (black) and 1 (lt gray) BGR */
 		move.l	#0xC0200000,(a1)		/* write CRAM address 32 */
@@ -171,6 +179,12 @@ _start:
 		move.l	#0xC0400000,(a1)		/* write CRAM address 64 */
 		move.l	#0x000000EE,(a2)		/* entry 32 (black) BGR and 33 (yellow) */
 		move.w	#0x0000,(a2)			/* entry 34 (opaque black) */
+		move.l	#0xC0600000,(a1)		/* HUD palette */
+		move.l	#0x00000CEE,(a2)		/* transparent, ivory */
+		move.l	#0x04220866,(a2)		/* panel, frame */
+		move.l	#0x02CE024E,(a2)		/* gold, critical health */
+		move.l	#0x06440CA8,(a2)		/* empty meter, steel */
+		move.l	#0x068E0684,(a2)		/* heart highlight, green health */
 
 		move.b	#0,(0xA15107)			/* clear RV - allow SH2 to access ROM */
 		move.w	#0,(JoypadState)		/* controller 1 */

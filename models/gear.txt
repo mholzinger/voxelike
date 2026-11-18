@@ -1,0 +1,240 @@
+# What the hero wears and holds, in the format of creatures.txt. The names
+# are what the code asks for: bake_models.py makes GEAR_<NAME> of each.
+#
+# A body is the whole hero as he looks in that armour; with none he is the
+# hero of creatures.txt. A weapon is stood where his right hand is: his
+# right is column 0 of the front view, and the hand is two columns from the
+# front of the side view. A column is solid from the ground up, so a weapon
+# stands on the floor or has shadow under it.
+
+# Leather armor
+= 1 body_leather
+..hhhh.. .#####.. ..hhhh..
+.hhhhhh. .#####.. .hhhhhh.
+.sesses. .#####.. .hhhhhh.
+.ssssss. .#####.. .shhhhs.
+LLLLLLLL ..###... LLLLLLLL
+sLLLLLLs ..###... sLLLLLLs
+.LLLLLL. .#####.. .LLLLLL.
+.nnnnnn. .#####.. .nnnnnn.
+.LLLLLL. .#####.. .LLLLLL.
+.GG..GG. ..###... .GG..GG.
+.NN..NN. ..###... .NN..NN.
+.NN..NN. ..####.. .NN..NN.
+
+# Ring mail: steel rings against a dark backing
+= 2 body_ring
+..hhhh.. .#####.. ..hhhh..
+.hhhhhh. .#####.. .hhhhhh.
+.sesses. .#####.. .hhhhhh.
+.ssssss. .#####.. .shhhhs.
+SwSwSwSw ..###... SwSwSwSw
+swSSwSSs ..###... swSSwSSs
+.SwSwSw. .#####.. .SwSwSw.
+.LLLLLL. .#####.. .LLLLLL.
+.wSSwSS. .#####.. .wSSwSS.
+.GG..GG. ..###... .GG..GG.
+.NN..NN. ..###... .NN..NN.
+.NN..NN. ..####.. .NN..NN.
+
+# Plate mail: smooth steel, a visor and gold waist trim
+= 3 body_plate
+..wwww.. .#####.. ..wwww..
+.wwwwww. .#####.. .wwwwww.
+.wesesw. .#####.. .wwwwww.
+.wssssw. .#####.. .wwwwww.
+wwwwwwww ..###... wwwwwwww
+wwwwwwww ..###... wwwwwwww
+.wwwwww. .#####.. .wwwwww.
+.YYYYYY. .#####.. .YYYYYY.
+.wwwwww. .#####.. .wwwwww.
+.ww..ww. ..###... .ww..ww.
+.ww..ww. ..###... .ww..ww.
+.NN..NN. ..####.. .NN..NN.
+
+# Studded leather: bronze studs over the leather body
+= 4 body_studded
+..hhhh.. .#####.. ..hhhh..
+.hhhhhh. .#####.. .hhhhhh.
+.sesses. .#####.. .hhhhhh.
+.ssssss. .#####.. .shhhhs.
+LynyynyL ..###... LynyynyL
+sLLLLLLs ..###... sLLLLLLs
+.yLLyLy. .#####.. .yLLyLy.
+.nnnnnn. .#####.. .nnnnnn.
+.LynyLL. .#####.. .LynyLL.
+.GG..GG. ..###... .GG..GG.
+.NN..NN. ..###... .NN..NN.
+.NN..NN. ..####.. .NN..NN.
+
+# Scale mail: overlapping bronze scales with steel shoulders
+= 5 body_scale
+..hhhh.. .#####.. ..hhhh..
+.hhhhhh. .#####.. .hhhhhh.
+.sesses. .#####.. .hhhhhh.
+.ssssss. .#####.. .shhhhs.
+wwnnnnww ..###... wwnnnnww
+synynyns ..###... snynynys
+.nynyny. .#####.. .nynyny.
+.LLLLLL. .#####.. .LLLLLL.
+.ynynyn. .#####.. .ynynyn.
+.GG..GG. ..###... .GG..GG.
+.NN..NN. ..###... .NN..NN.
+.NN..NN. ..####.. .NN..NN.
+
+# Chain mail: a steel coif and a long grey hauberk
+= 6 body_chain
+..SSSS.. .#####.. ..SSSS..
+.SwSwSw. .#####.. .SwSwSw.
+.SesesS. .#####.. .wSwSwS.
+.SssssS. .#####.. .SwSwSw.
+wSwSwSwS ..###... wSwSwSwS
+sSwSwSws ..###... sSwSwSws
+.wSwSwS. .#####.. .wSwSwS.
+.LLLLLL. .#####.. .LLLLLL.
+.wSwSwS. .#####.. .wSwSwS.
+.SwSwSw. ..###... .SwSwSw.
+.NN..NN. ..###... .NN..NN.
+.NN..NN. ..####.. .NN..NN.
+
+# Splint mail: pale steel strips on brown leather and an open cap
+= 7 body_splint
+..wwww.. .#####.. ..wwww..
+.SSwwSS. .#####.. .SSwwSS.
+.SesesS. .#####.. .SSwwSS.
+.LssssL. .#####.. .SSwwSS.
+wLwLLwLw ..###... wLwLLwLw
+swLwLwLs ..###... swLwLwLs
+.wLwwLw. .#####.. .wLwwLw.
+.LLLLLL. .#####.. .LLLLLL.
+.wLwwLw. .#####.. .wLwwLw.
+.wL..Lw. ..###... .wL..Lw.
+.LL..LL. ..###... .LL..LL.
+.NN..NN. ..####.. .NN..NN.
+
+# Banded mail: dark seams between broad blue steel bands
+= 8 body_banded
+..SSSS.. .#####.. ..SSSS..
+.SwwwwS. .#####.. .SwwwwS.
+.WesesW. .#####.. .SSSSSS.
+.WssssW. .#####.. .SwwwwS.
+wSSSSSSw ..###... wSSSSSSw
+SwwwwwwS ..###... SwwwwwwS
+.SSSSSS. .#####.. .SSSSSS.
+.LLLLLL. .#####.. .LLLLLL.
+.wwwwww. .#####.. .wwwwww.
+.SS..SS. ..###... .SS..SS.
+.ww..ww. ..###... .ww..ww.
+.NN..NN. ..####.. .NN..NN.
+
+# A wooden haft from the floor, and a steel head above the shoulder.
+= m mace
+ww...... ....##..
+ww...... ....##..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+
+# Point down on the floor, his hand on the grip.
+= s sword
+n....... .....#..
+YY...... ....###.
+w....... .....#..
+w....... .....#..
+w....... .....#..
+w....... .....#..
+w....... .....#..
+w....... .....#..
+
+= t two_handed_sword
+n....... .....#..
+n....... .....#..
+YY...... ...#####
+w....... ....##..
+w....... ....##..
+w....... ....##..
+w....... ....##..
+w....... ....##..
+w....... ....##..
+w....... ....##..
+w....... ....##..
+
+# Held up in the fist.
+= d dagger
+w....... .....#..
+w....... .....#..
+Y....... ....###.
+n....... .....#..
+k....... .....#..
+k....... .....#..
+k....... .....#..
+k....... .....#..
+k....... .....#..
+
+= p spear
+w....... .....#..
+w....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+
+# The stave upright, bent away from him at the grip.
+= b bow
+n....... ....#...
+n....... .....#..
+n....... .....#..
+n....... ......#.
+n....... ......#.
+n....... ......#.
+n....... .....#..
+n....... .....#..
+n....... ....#...
+k....... ....#...
+k....... ....#...
+
+# Arrow: a slim wooden shaft with pale fletching below the hand.
+= a arrow
+w....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+n....... .....#..
+W....... ....##..
+W....... ....##..
+
+# Dart: a short steel point and red flights, held point-up.
+= f dart
+w....... .....#..
+w....... .....#..
+S....... .....#..
+r....... ....##..
+r....... ....##..
+k....... .....#..
+k....... .....#..
+k....... .....#..
+
+# Shuriken: a steel star held by one point.
+= x shuriken
+w....... .....#..
+w....... ....###.
+wSw..... ....###.
+w....... ....###.
+w....... .....#..
+k....... .....#..
+k....... .....#..
+k....... .....#..

@@ -188,7 +188,7 @@ void persp_sync(void) {
             cells[cy][cx].light = (uint8_t)d;
         }
     }
-    persp_creatures();
+    persp_creatures(0);
 }
 
 /* The cell's own copy of its model, to stand a creature on. 0 if the cell
@@ -212,10 +212,56 @@ static vmodel_t *bump_for(int cx, int cy) {
     return m;
 }
 
+/* The hero as he is dressed and armed: the body his armour gives him, and
+ * his weapon added wherever it stands clear of that. By Rogue's numbers. */
+static const vcol_t (*hero_dressed(void))[CELL] {
+    static const uint8_t body_of[8] = {
+        GEAR_BODY_LEATHER, GEAR_BODY_RING, GEAR_BODY_STUDDED, GEAR_BODY_SCALE,
+        GEAR_BODY_CHAIN, GEAR_BODY_SPLINT, GEAR_BODY_BANDED, GEAR_BODY_PLATE,
+    };
+    static const uint8_t held_of[9] = {
+        GEAR_MACE, GEAR_SWORD, GEAR_BOW, GEAR_ARROW, GEAR_DAGGER,
+        GEAR_TWO_HANDED_SWORD, GEAR_DART, GEAR_SHURIKEN, GEAR_SPEAR,
+    };
+    static vcol_t made[CELL][CELL];
+    static int armor = -2, weapon = -2;
+
+    if (armor == vox_hero_armor && weapon == vox_hero_weapon) return (const vcol_t (*)[CELL])made;
+    armor = vox_hero_armor;
+    weapon = vox_hero_weapon;
+    const vcol_t (*body)[CELL] = (unsigned)armor < 8 ? gear_solid[body_of[armor]] : ent_solid[0];
+    const vcol_t (*held)[CELL] = (unsigned)weapon < 9 ? gear_solid[held_of[weapon]] : 0;
+    for (int x = 0; x < CELL; x++) {
+        for (int y = 0; y < CELL; y++) {
+            vcol_t *dst = &made[x][y];
+            *dst = body[x][y];
+            if (!held) continue;
+            while (dst->h < held[x][y].h) {
+                dst->c[dst->h] = held[x][y].c[dst->h];
+                dst->h++;
+            }
+        }
+    }
+    return (const vcol_t (*)[CELL])made;
+}
+
+void persp_hero_shatter(void) {
+    vox_hero_shatter(hero_dressed());
+}
+
+int persp_hero_height(void) {
+    const vcol_t (*model)[CELL] = hero_dressed();
+    int height = 0;
+    for (int x = 0; x < CELL; x++)
+        for (int y = 0; y < CELL; y++)
+            if (model[x][y].h > height) height = model[x][y].h;
+    return height;
+}
+
 /* Stand every creature where it is this frame. A creature is 8x8 columns
  * of voxels, turned to face the way it last moved; walking between cells
  * it stands partly on each. */
-void persp_creatures(void) {
+void persp_creatures(int hero_buried) {
     vox_creature_t c;
 
     while (n_bumped > 0) {
@@ -223,17 +269,12 @@ void persp_creatures(void) {
         terrain(bumped[n_bumped].cx, bumped[n_bumped].cy);
     }
     for (int i = 0; vox_creature(i, &c); i++) {
+        const vcol_t (*model)[CELL] = c.kind ? ent_solid[c.kind] : hero_dressed();
         for (int fx = 0; fx < CELL; fx++) {
             for (int fy = 0; fy < CELL; fy++) {
-                /* The footprint, turned: its front is its y = 7 edge. */
-                const vcol_t *src;
-                switch (c.face) {
-                default: src = &ent_solid[c.kind][fx][fy]; break;
-                case 1:  src = &ent_solid[c.kind][fy][CELL - 1 - fx]; break;
-                case 2:  src = &ent_solid[c.kind][CELL - 1 - fx][CELL - 1 - fy]; break;
-                case 3:  src = &ent_solid[c.kind][CELL - 1 - fy][fx]; break;
-                }
-                if (!src->h) continue;
+                const vcol_t *src = vox_model_column(model, c.face, fx, fy);
+                int buried = c.kind ? 0 : hero_buried;
+                if (src->h <= buried) continue;
 
                 int wx = c.x + fx, wy = c.y + fy;
                 vmodel_t *m = bump_for(wx >> 3, wy >> 3);
@@ -243,7 +284,7 @@ void persp_creatures(void) {
                 for (int z = 0; z < c.z && dst->h < COL_MAXH; z++) {
                     dst->c[dst->h++] = src->c[0];
                 }
-                for (int z = 0; z < src->h && dst->h < COL_MAXH; z++) {
+                for (int z = buried; z < src->h && dst->h < COL_MAXH; z++) {
                     dst->c[dst->h++] = c.flash ? (uint8_t)(c.flash & ~7) : src->c[z];
                 }
             }
@@ -693,10 +734,10 @@ void persp_secondary(void) {
  * hit. Each is put where the camera sees it, over the finished picture; one
  * that should be behind a wall shows through it for the moment it lasts. */
 static void pieces(void) {
-    int px, py, pz;
+    int px, py, pz, piece;
     unsigned colour;
 
-    for (int i = 0; vox_piece(i, &px, &py, &pz, &colour); i++) {
+    for (int i = 0; (piece = vox_piece(i, &px, &py, &pz, &colour)); i++) {
         sh2z_fx_t rx = (px << 12) - job.ex, ry = (py << 12) - job.ey;
         sh2z_fx_t t = sh2z_mul(rx, job.c) + sh2z_mul(ry, job.s);
         sh2z_fx_t u = sh2z_mul(ry, job.c) - sh2z_mul(rx, job.s);
@@ -710,10 +751,21 @@ static void pieces(void) {
         /* Outside the focus window's rows only even framebuffer rows show. */
         if (job.res == PERSP_RES_FOCUS && (row < FOCUS_Y0 || row >= FOCUS_Y1)) row &= ~1;
 
-        /* A voxel's worth of pixels, whatever a pixel is. */
-        uint8_t *at = (uint8_t *)(job.fb + FB_PIXELS) + row * STRIDE + (fine_x ? col & ~1 : col * 2);
-        *(pair_t *)at = vox_wtab[colour];
-        if (fine_y && row + 1 < job.rows) *(pair_t *)(at + STRIDE) = vox_wtab[colour];
+        int x = fine_x ? col & ~1 : col * 2;
+        uint8_t *at = (uint8_t *)(job.fb + FB_PIXELS) + row * STRIDE + x;
+        if (piece == 2) {
+            /* Larger pieces keep a lit top and a darker side as they fall. */
+            unsigned material = colour & ~7u;
+            int rows = fine_y ? 4 : 2;
+            for (int dy = 0; dy < rows && row + dy < job.rows; dy++) {
+                *(pair_t *)(at + dy * STRIDE) = vox_wtab[material + (dy < rows / 2 ? 7 : 6)];
+                if (x + 2 < STRIDE)
+                    *(pair_t *)(at + dy * STRIDE + 2) = vox_wtab[material + (dy < rows / 2 ? 6 : 4)];
+            }
+        } else {
+            *(pair_t *)at = vox_wtab[colour];
+            if (fine_y && row + 1 < job.rows) *(pair_t *)(at + STRIDE) = vox_wtab[colour];
+        }
     }
 }
 

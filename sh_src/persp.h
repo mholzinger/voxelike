@@ -21,15 +21,21 @@ void persp_init(void);
 /* The world changed (a screen was loaded): take it in again. */
 void persp_sync(void);
 
-/* Creatures moved: stand them where they are now. */
-void persp_creatures(void);
+/* Height of the equipped hero model in voxel layers. */
+int persp_hero_height(void);
+void persp_hero_shatter(void);
+
+/* Restamp the creatures. hero_buried crops that many layers from the
+ * hero's feet, raising the head out of the floor as it counts down to zero. */
+void persp_creatures(int hero_buried);
 
 /* Which way the camera looks, in sh2zam turns (0xC000 is north). */
 extern uint16_t persp_yaw;
+extern int camera_yaw_settled;
 
 /* Draw a whole frame into framebuffer fb. (x, y) is the voxel the camera
  * circles, yaw the direction it looks in sh2zam turns (0xC000 is north),
- * pull how far it stands back: 0 close in, 256 all the way out. flat takes
+ * pull how far it stands back: -200 for the intro dive, 0 normal, 256 all the way out. flat takes
  * the perspective out: 0 is all of it, and at 256, looking north, the
  * picture is the fixed view's. res is one of PERSP_RES_x. */
 void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, int res);

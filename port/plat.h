@@ -27,10 +27,14 @@ unsigned long rogue_attacker(void);        /* next monster that struck at the pl
 int  rogue_bot_key(void);                  /* test builds: the next command, 0 to stand */
 int  rogue_bot_answer(void);               /* test builds: the answer to a prompt */
 #endif
+void rogue_gear(int *armor, int *weapon);  /* Rogue's numbers for what is worn and wielded, -1 for nothing */
 void rogue_idle(int on);                   /* turns that pass by themselves cost no food */
 int  rogue_room(int *bounds);              /* lit room the player is in, as x0 y0 x1 y1 */
 int  rogue_cursor_row(void);               /* 0 while Rogue waits on a prompt */
-void rogue_status(char *buf);              /* stats line, 40 columns */
-int  rogue_pack(int index, char *buf, int max);   /* "a) name"; returns the letter or 0 */
+typedef struct {
+    int depth, gold, hp, hp_max, strength, armor, rank, experience, hunger;
+} rogue_status_t;
+void rogue_status(rogue_status_t *status);
+int  rogue_pack(int index, char *buf, int max);   /* "a) name" of the index'th thing that fits what is asked for; returns the letter or 0 */
 
 #endif

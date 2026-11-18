@@ -23,6 +23,7 @@ make FLAT=1     # the flat view alone, without the 3D renderer
 make STATS=1    # show frames a second and the time to draw one
 make BENCH=7    # the same 256 frames every run, for timing (tools/mbench.sh)
 make VERSION=0.1.0-alpha.1   # the name on the title screen; without it, dev- and the commit
+make ARMOR=7 WEAPON=5   # dress the hero for looking at the art (Rogue's numbers)
 make RES=0      # start in a resolution: 0 160x112, 1 320x112, 2 320x224, 3 focus (the default)
 make shot       # build, run headless in ares, write shots/latest.png
 make shot FRAMES=320 INPUT=keys.csv
@@ -41,6 +42,21 @@ number it would get, asks, and then moves `main` up to `development`.
 `make shot` needs the headless ares fork (`ARES=` overrides its path). The
 Makefile lists the rest: `PERSP=2` turns the camera by itself for measuring
 and `BOT=1` builds a ROM that plays itself.
+
+## Title screen
+
+An amber `@` takes two steps through a chunky ASCII dungeon. The camera
+tips toward the horizon, revealing the cubes that make up each glyph.
+They gather into **Voxelike**, with the amber cubes finishing the V.
+Start skips to the finished title during the animation. Press it again
+to fly through the logo. In a 3D build, the camera dives toward the
+generated spawn tile and the hero rises through it with his equipped
+gear. BOT and BENCH builds open on the finished title and go straight
+to gameplay.
+
+`tools/bake_splash.py` uses the same font as the Mega Drive text layer to
+build the animation into the ROM. The 32X draws it as 2x2 pixel blocks
+with its own palette, then switches to the dungeon palette for play.
 
 ## How the flat renderer works
 
@@ -85,6 +101,18 @@ tools/bake_models.py --preview shots/creatures.png
 
 draws every creature with the renderer's projection, no ROM needed.
 
+## What the hero wears and holds
+
+In the 3D view the hero shows his armour and his weapon. `models/gear.txt`
+holds a distinct body for each of Rogue's eight armours and a model for all
+nine wieldable weapons, including an arrow, a dart and a shuriken. The port
+tells the renderer what the hero has equipped, and `persp.c` adds the weapon
+to the body wherever it stands
+clear of it. A voxel column is solid from the ground up, so a weapon stands
+on the floor by his right hand or has shadow under it. `make ARMOR=7
+WEAPON=5` dresses him so whatever he owns, for looking at the art. The flat
+view still shows him plain.
+
 ## Living heights
 
 Rogue's map is flat. The renderer is not obliged to be:
@@ -107,25 +135,15 @@ renderers draw the plinths.
 The game's main view is drawn by `sh_src/persp.c`: a camera with perspective
 that circles the hero.
 
-The camera looks after itself, but seldom moves. Up on the D-pad means
-away from the camera, so a camera that turns while the player is steering
-takes the steering away from him. It turns at two moments only. When the
-hero walks into another room, or out into the passages, it takes up a
-three-quarter view of the way he came in: within an eighth of a turn of
-straight behind him, wherever in that the least stands in the way and the
-swing is shortest. And when he walks in behind a wall and cannot be seen
-whole, it goes to the nearest place he can be seen from. Inside a room it
-otherwise stays where it is. Even then it waits its moment: while a
-direction is held and the hero is getting somewhere it does not move,
-however many doors he goes through. It moves when the pad is let go, or
-when he has walked as far as that direction will take him and stood against
-it for a moment; a run of taps counts as holding. What up means is steadier
-still. It is always one of the map's four directions, the one nearest to
-away from the camera, and it changes only on a push after the pad has
-rested, and only if the camera has turned well past halfway to the next
-one. So the camera's own small swings leave the controls as they were.
-Turning the camera by hand holds all
-this off for three seconds. See `follow()` in `sh_src/m_main.c`.
+The camera keeps its heading as the hero walks through rooms and passages.
+If a wall hides him, it waits for a pause in movement and swings toward a
+clearer view from one of the four map directions. A new direction press
+pauses the swing. The camera checks visibility again from the new tile
+before resuming. Manual camera turns hold off recovery for three seconds.
+
+Up on the D-pad is the map direction nearest to away from the camera.
+The mapping updates when the camera settles and the pad is released,
+so a held direction keeps its meaning through a swing.
 
 | Pad | Camera |
 |---|---|
@@ -247,7 +265,17 @@ own data, with no change to Rogue's source:
 - Anything that lost hit points since the last turn flashes: monsters white,
   the hero red.
 - A monster that is gone from Rogue's monster list died, and its sprite is
-  thrown apart as loose voxels that fall, lie a moment and vanish.
+  thrown apart as loose voxels that fall, lie a moment and vanish. In 3D,
+  nearby defeats get a short shot that frames both fighters, moves closer,
+  then releases the opponent's voxels before returning to the gameplay view.
+
+## Player death
+
+The camera pushes in to make the hero about 50 percent larger. The fatal
+blow breaks the equipped hero into chunks that keep their model colours,
+with a separate spray of red voxels. The camera
+pulls back while the dungeon fades to black, then Rogue’s headstone shows
+the cause of death and gold. Press Start on the headstone to begin again.
 
 ## Sound
 
@@ -296,8 +324,27 @@ direction, use the D-pad. At a yes/no prompt A is yes.
 Text is drawn on the Mega Drive layer, 40 columns of an 8x8 font, in front of
 the 32X picture. `sh_src/rogue_plat.c` decides what Rogue is waiting for from
 where it left the cursor and what the message line says, then shows the
-matching screen. Rogue's 80 column message line is word wrapped onto two rows,
-and its status line is rebuilt in a compact form from the same variables.
+matching screen. Rogue's 80 column message line wraps into a strip at the top,
+and its stats feed a framed HUD with a health meter and pixel icons for
+depth, gold, strength, armor and experience. The health meter turns red
+at a quarter health. Controller lists scroll when the choices would
+otherwise overlap the status panel.
+
+When Rogue asks which object, the list offers only what fits the question:
+potions to quaff, scrolls to read, and for a scroll that identifies one kind
+of thing, that kind. Anything can be wielded or thrown, so those two list
+the whole pack. The port learns what Rogue wants by having the linker route
+`get_item` through it (`--wrap`), as it does `attack`; Rogue's source is not
+touched. Before this an identify scroll listed everything, refused all but
+one line of it, and could not be backed out of.
+
+Questions a keyboard answers with one key are lists too. The table `asks`
+in `sh_src/rogue_plat.c` holds the words that give a question away and a
+key for each line: Discoveries asks which kind (everything, potions,
+scrolls, rings, wands and staffs) and a ring asks which hand. "What do you
+want to call it?" offers a few short names (`guesses`, in the same file)
+and types the one chosen. A question that is in neither gets A for yes, C
+for no and B to back out.
 
 ## Tools
 
@@ -321,8 +368,10 @@ and its status line is rebuilt in a compact form from the same variables.
   times another resolution; without RES it is focus, as the game starts.
 - `tools/profile.py prof.csv` turns `ares-headless --profile prof.csv` into
   time by function; `tools/raysize.sh` lists the size of what runs from RAM.
-- Input scripts are `frame,button,value` lines. Boot takes about 2 seconds, so
-  press Start no earlier than frame 150.
+- Input scripts are `frame,button,value` lines. For a normal build, press Start at
+  frame 470 or later to enter from the finished title, or press and
+  release Start once to skip the animation, then press again to play.
+  For BOT or BENCH builds, press Start at frame 150.
 
 ## Credits and licenses
 

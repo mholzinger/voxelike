@@ -35,6 +35,7 @@ typedef struct {
 } vmodel_t;
 
 extern int vox_hero_cx, vox_hero_cy;   /* where the last screen load found '@' */
+extern int vox_hero_armor, vox_hero_weapon;   /* Rogue's numbers for what he wears and wields, -1 for nothing */
 extern int vox_hero_x, vox_hero_y;     /* top left voxel of the hero right now */
 extern int vox_hero_busy;              /* the hero is still walking or lunging */
 extern int vox_hero_jumped;            /* set when the hero moved without walking */
@@ -70,7 +71,11 @@ void vox_init(void);
  * lost hit points flashes, one that died falls to pieces. Only what changed
  * is redrawn afterwards. */
 void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
-                     const int *room, int depth, int frames);
+                     const int *room, int depth, int frames, int stage_defeat);
+
+/* Hold one defeated opponent on screen until the combat camera is ready. */
+int vox_defeat_target(int *x, int *y);
+void vox_release_defeat(void);
 
 /* A creature struck at the hero: have it jab that way, a moment from now. */
 void vox_jab(uint32_t id);
@@ -80,6 +85,13 @@ void vox_animate(void);
 
 /* Have the hero jab toward a neighbouring cell and come back. */
 void vox_hero_lunge(int dx, int dy);
+
+/* Preserve the hero's colours during the close-up. */
+void vox_hero_clear_flash(void);
+
+/* Shed model-coloured chunks and a separate spray. A flat build uses the
+ * hero sprite in place of the equipped 3D model. */
+void vox_hero_shatter(const vcol_t model[CELL][CELL]);
 
 /* Bring the framebuffer that is about to be shown up to date for a camera
  * position and point its line table there. buf names which of the two
@@ -92,7 +104,8 @@ int vox_height_at(int cx, int cy);
 /* Something else drew on the framebuffers: nothing in them can be kept. */
 void vox_forget(void);
 
-/* Black out or restore the 32X picture without touching the framebuffers. */
-void vox_palette(int on);
+/* Light the 32X picture from black to full brightness. */
+#define VOX_FULL_LIGHT 16
+void vox_palette(int light);
 
 #endif

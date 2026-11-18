@@ -21,6 +21,14 @@ void text_put(int x, int y, const char *s, int len, uint16_t color, int solid) {
 	}
 }
 
+void text_tile(int x, int y, uint16_t tile) {
+	if((unsigned)x < TEXT_W && (unsigned)y < TEXT_H) want[y][x] = tile;
+}
+
+void text_fill(int x, int y, int width, uint16_t color) {
+	for(int i = 0; i < width; i++) text_tile(x + i, y, SOLID_TILES | color);
+}
+
 void text_commit(void) {
 	for(int y = 0; y < TEXT_H; y++) {
 		int at = -1;   /* column the 68K's write pointer sits on, this row */

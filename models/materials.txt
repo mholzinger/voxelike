@@ -18,7 +18,7 @@ HAIR       21 10  3   h
 SKIN       31 23 17   s
 EYE         3  3  8   e
 TUNIC       8 25  8   G
-BELT       14  8  3   -
+BELT       14  8  3   L
 BOOT       12  7  4   N
 STEEL      24 26 29   w
 PAPER      30 28 21   W

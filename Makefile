@@ -40,8 +40,8 @@ MDASFLAGS  = -x assembler-with-cpp -Imd_src -m68000 -Wa,--register-prefix-option
 SHASFLAGS  = -I$(ROMDIR) --small
 
 MDLDFLAGS  = -T md_src/md.ld -nostdlib
-# --wrap=attack: see __wrap_attack in port/rogue_port.c
-SHLDFLAGS  = -T sh_src/mars.ld -nostdlib -Wl,--wrap=attack
+# --wrap=attack, death, get_item: see __wrap_attack and __wrap_get_item in port/rogue_port.c
+SHLDFLAGS  = -T sh_src/mars.ld -nostdlib -Wl,--wrap=attack -Wl,--wrap=death -Wl,--wrap=get_item
 
 # Extra options set by debug or release target
 MDEXTRA =
@@ -73,6 +73,8 @@ RGFLAGS = -m2 -mb -O2 -fomit-frame-pointer -ffreestanding -Iport/include -Irogue
 #   make BOT=1      a ROM that plays itself, for tools/botrun.py
 #   make VERSION=v the name on the title screen (a release's; otherwise the
 #                   commit's)
+#   make ARMOR=n WEAPON=n   dress the hero by Rogue's numbers whatever he has
+#                   (armor 0 leather .. 7 plate, weapon 0 mace .. 8 spear, -1 none)
 #   make BENCH=n    the same picture every run, for timing: dungeon n, the
 #                   hero standing in it, and the camera going round him. Each
 #                   turn of the camera is the same 256 frames, and the yellow
@@ -86,6 +88,12 @@ override PERSP := 2
 override STATS := 1
 SHCCFLAGS += -DBENCH=$(BENCH)
 endif
+ifdef ARMOR
+SHCCFLAGS += -DSHOW_ARMOR=$(ARMOR)
+endif
+ifdef WEAPON
+SHCCFLAGS += -DSHOW_WEAPON=$(WEAPON)
+endif
 ifdef BOT
 RGFLAGS   += -DBOT
 SHCCFLAGS += -DBOT
@@ -95,7 +103,7 @@ SHCCFLAGS += -DPERSP=$(PERSP) $(if $(RES),-DPERSP_RES=$(RES)) $(if $(STATS),-DST
 endif
 .DEFAULT_GOAL := all
 BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)
-PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)$(if $(RES),-res$(RES))$(if $(STATS),-stats)$(if $(BENCH),-bench$(BENCH))
+PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)$(if $(RES),-res$(RES))$(if $(STATS),-stats)$(if $(BENCH),-bench$(BENCH))$(if $(ARMOR),-armor$(ARMOR))$(if $(WEAPON),-weapon$(WEAPON))
 # File times here are whole seconds. A stamp waits one out before it is
 # made, so that it is strictly newer than everything the last build left,
 # and everything that depends on the kind of build is made again.
@@ -202,8 +210,8 @@ $(TARGET).32x: $(TARGET).elf
 	@dd if=$(ROMDIR)/temp.32x of=$@ bs=8192 conv=sync 2>/dev/null
 	@rm -f $(ROMDIR)/temp.32x
 
-$(TARGET).elf: $(SHOBJS) | $(ROMDIR)
-	$(SHCC) $(SHLDFLAGS) $^ -o $@ $(SHLIBS)
+$(TARGET).elf: $(SHOBJS) Makefile | $(ROMDIR)
+	$(SHCC) $(SHLDFLAGS) $(SHOBJS) -o $@ $(SHLIBS)
 
 # Materials and creature sprites, baked from the art in models/
 sh_src/baked.h: models/materials.txt models/creatures.txt tools/bake_models.py
@@ -212,11 +220,17 @@ sh_src/baked.h: models/materials.txt models/creatures.txt tools/bake_models.py
 
 sh_src/voxel.o: sh_src/baked.h
 
-sh_src/baked3d.h: models/materials.txt models/creatures.txt tools/bake_models.py
+sh_src/baked3d.h: models/materials.txt models/creatures.txt models/gear.txt tools/bake_models.py
 	@echo "BAKE $@"
 	@python3 tools/bake_models.py --solid $@
 
 sh_src/persp.o: sh_src/baked3d.h
+
+sh_src/splash_frames.h: tools/bake_splash.py md_src/font.s
+	@echo "BAKE $@"
+	@python3 tools/bake_splash.py md_src/font.s $@
+
+sh_src/splash.o: sh_src/splash_frames.h
 
 # mars_start.s embeds the 68K program
 sh_src/mars_start.o: $(MDTARGET).bin
@@ -253,6 +267,6 @@ clean:
 	rm -f $(MDOBJS) $(SHOBJS) $(MDOBJS:.o=.d) $(SHOBJS:.o=.d)
 	rm -f $(MDTARGET).bin $(MDTARGET).elf $(MDTARGET).lst
 	rm -f $(TARGET).32x $(TARGET).elf $(TARGET).lst
-	rm -f sh_src/baked.h sh_src/version.h
+	rm -f sh_src/baked.h sh_src/version.h sh_src/splash_frames.h
 
 -include $(MDOBJS:.o=.d) $(SHOBJS:.o=.d)

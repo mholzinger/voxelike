@@ -30,6 +30,7 @@ uint8_t vox_lift[MAP_H][MAP_W];    /* voxels of plinth under the cell's model */
 uint8_t vox_light[MAP_H][MAP_W];   /* top-face shade 0..7 */
 
 int vox_hero_cx, vox_hero_cy;
+int vox_hero_armor = -1, vox_hero_weapon = -1;
 int vox_hero_x, vox_hero_y;
 int vox_hero_busy, vox_hero_jumped;
 int vox_moving;
@@ -71,6 +72,8 @@ typedef struct {
 
 static ent_t ents[MAX_ENTS];
 static int n_ents;
+static ent_t defeated;
+static int defeat_staged;
 
 /* A loose voxel, in sixteenths: what a creature leaves when it dies. */
 typedef struct {
@@ -78,6 +81,7 @@ typedef struct {
     int8_t vx, vy, vz;
     uint8_t life;
     uint8_t pixel;        /* as in a creature sprite: material and face */
+    uint8_t chunk;        /* larger, heavier fragment from the equipped hero */
 } part_t;
 
 static part_t parts[MAX_PARTS];
@@ -405,7 +409,7 @@ static unsigned chance(void) {
 
 /* Turn a creature into loose voxels where it stands: a sample of its
  * sprite, thrown up and outward. */
-static void shatter(const ent_t *e) {
+static void shatter(const ent_t *e, int chunk) {
     int ex = e->x + e->ox, ey = e->y + e->oy;
     int total = 0, skip, n = 0;
 
@@ -433,10 +437,88 @@ static void shatter(const ent_t *e) {
             p->vx = (int8_t)((lx * 2 - 7) * 2 + (int)(chance() & 7) - 4);
             p->vy = (int8_t)((int)(chance() & 15) - 8);
             p->vz = (int8_t)(16 + (chance() & 15));
-            p->life = PART_LIFE;
+            p->life = PART_LIFE + (chunk ? PART_REST : 0);
             p->pixel = (uint8_t)v;
+            p->chunk = (uint8_t)chunk;
             stale_part(p);
         }
+    }
+}
+
+int vox_defeat_target(int *x, int *y) {
+    if (!defeat_staged) return 0;
+    *x = defeated.x + defeated.ox + CELL / 2;
+    *y = defeated.y + defeated.oy + CELL / 2;
+    return 1;
+}
+
+void vox_release_defeat(void) {
+    if (!defeat_staged) return;
+    stale_ent(&defeated);
+    shatter(&defeated, 1);
+    vox_events |= VOX_BURST;
+    defeat_staged = 0;
+}
+
+void vox_hero_clear_flash(void) {
+    for (int i = 0; i < n_ents; i++) {
+        ent_t *e = &ents[i];
+        if (e->id != HERO_ID) continue;
+        stale_ent(e);
+        e->flash = e->flash_wait = 0;
+        return;
+    }
+}
+
+static void hero_fragment(int x, int y, int z, int vx, int vy, int vz,
+                          unsigned pixel, int chunk) {
+    part_t *p = &parts[n_parts++];
+    *p = (part_t){
+        .x = (int16_t)(x * 16), .y = (int16_t)(y * 16), .z = (int16_t)(z * 16),
+        .vx = (int8_t)vx, .vy = (int8_t)vy, .vz = (int8_t)vz,
+        .life = PART_LIFE + (chunk ? PART_REST : 0),
+        .pixel = (uint8_t)pixel, .chunk = (uint8_t)chunk,
+    };
+    stale_part(p);
+}
+
+void vox_hero_shatter(const vcol_t model[CELL][CELL]) {
+    enum { BLOOD_COUNT = 28 };
+    for (int i = 0; i < n_ents; i++) {
+        ent_t *e = &ents[i];
+        if (e->id != HERO_ID) continue;
+        int ex = e->x + e->ox, ey = e->y + e->oy;
+        int floor = lift_under(ex, ey) + e->z;
+
+        /* Reserve room for the two effects even if a monster just broke up. */
+        while (n_parts > MAX_PARTS / 8) stale_part(&parts[--n_parts]);
+        if (model) {
+            for (int x = 0; x < CELL; x++) {
+                for (int y = 0; y < CELL; y++) {
+                    const vcol_t *col = vox_model_column(model, e->face, x, y);
+                    for (int z = 0; z < col->h && n_parts < MAX_PARTS - BLOOD_COUNT; z++) {
+                        unsigned material = col->c[z];
+                        if (material == MAT(MT_SHADOW) || (x + y + z) % 6) continue;
+                        int vx = (2 * x - 7) * 2 + (int)(chance() & 7) - 3;
+                        int vy = (2 * y - 7) * 2 + (int)(chance() & 7) - 3;
+                        int vz = 4 + (int)(chance() & 7);
+                        hero_fragment(ex + x, ey + y, floor + 1 + z, vx, vy, vz, material + 1, 1);
+                    }
+                }
+            }
+        } else {
+            shatter(e, 0);
+        }
+        for (int n = 0; n < BLOOD_COUNT && n_parts < MAX_PARTS; n++) {
+            int vx = (int)(chance() % 55) - 27;
+            int vy = (int)(chance() % 47) - 23;
+            int vz = 17 + (int)(chance() & 15);
+            int z = floor + 5 + (int)(chance() & 3);
+            hero_fragment(ex + CELL / 2, ey + CELL / 2, z, vx, vy, vz, MAT(MT_RED) + (n & 1), 0);
+        }
+        stale_ent(e);
+        *e = ents[--n_ents];
+        return;
     }
 }
 
@@ -444,7 +526,8 @@ static void parts_animate(void) {
     for (int i = 0; i < n_parts; ) {
         part_t *p = &parts[i];
         stale_part(p);
-        if (p->life > PART_REST) {
+        int rest = p->chunk ? 2 * PART_REST : PART_REST;
+        if (p->life > rest) {
             p->x += p->vx;
             p->y += p->vy;
             p->z += p->vz;
@@ -458,7 +541,7 @@ static void parts_animate(void) {
         int floor = vox_lift[p->y >> 7][p->x >> 7] << 4;
         if (p->z <= floor && p->vz <= 0) {
             p->z = (int16_t)floor;
-            if (p->life > PART_REST) p->life = PART_REST;
+            if (p->life > rest) p->life = (uint8_t)rest;
         }
         stale_part(p);
         i++;
@@ -530,17 +613,19 @@ int vox_piece(int i, int *x, int *y, int *z, unsigned *colour) {
     *y = p->y;
     *z = p->z;
     *colour = (p->pixel & ~7u) + ((p->pixel & 1) ? 7 : 5);
-    return 1;
+    return p->chunk ? 2 : 1;
 }
 
 int vox_creature(int i, vox_creature_t *c) {
-    if (i >= n_ents) return 0;
-    const ent_t *e = &ents[i];
+    if (i >= n_ents + defeat_staged) return 0;
+    const ent_t *e = i < n_ents ? &ents[i] : &defeated;
     c->x = e->x + e->ox;
     c->y = e->y + e->oy;
     c->z = e->z;
     c->kind = e->kind;
     c->face = e->face;
+    if (defeat_staged && e->id == HERO_ID)
+        c->face = facing(defeated.x - e->x, defeated.y - e->y);
     c->flash = (e->flash && !e->flash_wait) ? (e->id == HERO_ID ? FLASH_HERO : FLASH_OTHER) : 0;
     return 1;
 }
@@ -560,7 +645,7 @@ void vox_hero_lunge(int dx, int dy) {
 /* Row 0 of Rogue's screen is its message line and the last row its status
  * line; neither is dungeon. */
 void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
-                     const int *room, int depth, int frames) {
+                     const int *room, int depth, int frames, int stage_defeat) {
     vox_under_fn under = src->under;
     int same_level = (depth == last_depth);
 
@@ -635,8 +720,18 @@ void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
         if (!e->seen) {
             stale_ent(e);
             if (same_level && !(e->id & 0x80000000u) && !src->alive(e->id)) {
-                shatter(e);
-                vox_events |= VOX_BURST;
+                int dx = e->tx - vox_hero_cx * CELL;
+                int dy = e->ty - vox_hero_cy * CELL;
+                if (stage_defeat && !defeat_staged && e->kind &&
+                    dx * dx + dy * dy <= 36 * CELL * CELL) {
+                    defeated = *e;
+                    defeated.flash = 0;
+                    defeated.face = facing(-dx, -dy);
+                    defeat_staged = 1;
+                } else {
+                    shatter(e, 0);
+                    vox_events |= VOX_BURST;
+                }
             }
             *e = ents[--n_ents];
             continue;
@@ -655,16 +750,16 @@ void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
     hero_follow();
 }
 
-void vox_palette(int on) {
+void vox_palette(int light) {
     volatile uint16_t *cram = &MARS_CRAM;
 
     for (int i = 0; i < N_SHADES; i++) cram[i] = 0;
     for (int m = 1; m < MT_COUNT; m++) {
         for (int s = 0; s < N_SHADES; s++) {
-            int k = on ? s + 2 : 0;   /* shade 0 is 2/9 brightness, shade 7 is full */
-            cram[MAT(m) + s] = COLOR(mat_rgb[m][0] * k / 9,
-                                     mat_rgb[m][1] * k / 9,
-                                     mat_rgb[m][2] * k / 9);
+            int k = light * (s + 2);   /* shade 0 is 2/9 brightness, shade 7 is full */
+            cram[MAT(m) + s] = COLOR(mat_rgb[m][0] * k / (9 * VOX_FULL_LIGHT),
+                                     mat_rgb[m][1] * k / (9 * VOX_FULL_LIGHT),
+                                     mat_rgb[m][2] * k / (9 * VOX_FULL_LIGHT));
         }
     }
 }
@@ -681,7 +776,7 @@ void vox_forget(void) {
 }
 
 void vox_init(void) {
-    vox_palette(1);
+    vox_palette(VOX_FULL_LIGHT);
     for (int i = 0; i < 256; i++) vox_wtab[i] = (uint16_t)(i * 0x0101);
     memset(slot_owner, 0xFF, sizeof(slot_owner));
     memset(dirty_lo, 0xFF, sizeof(dirty_lo));

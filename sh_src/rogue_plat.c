@@ -2,6 +2,7 @@
 #include "voxel.h"
 #include "text.h"
 #include "sfx.h"
+#include "persp.h"
 #include "../port/plat.h"
 
 /* The machine side of the Rogue port. Rogue runs as an ordinary blocking
@@ -11,6 +12,7 @@
 
 extern void game_frame(void);
 extern void game_blank(void);
+extern void game_death(void);
 
 int plat_screen_changed = 1;
 
@@ -44,8 +46,9 @@ int plat_step_frames = STEP;
 #define HUD_X         1
 #define HUD_W         (TEXT_W - 2)
 #define MSG_ROW       1
-#define LIST_ROW      3
-#define STATUS_ROW    26
+#define LIST_ROW      5
+#define STATUS_ROW    25
+#define LIST_ROWS     (STATUS_ROW - LIST_ROW - 2)
 
 unsigned long plat_ticks(void) {
 #ifdef BENCH
@@ -112,36 +115,17 @@ static void wait_any(void (*frame)(void), int frames) {
 }
 
 #ifdef PERSP
-/* Up on the pad means away from the camera, as near as one of the map's
- * four directions comes to that: never a diagonal, which Rogue will not
- * walk through a door. The pad's direction is turned by quarter turns, and
- * the turn is sticky. It is looked at again only on a push that follows
- * PAD_REST vblanks of the pad let go, so neither a held direction nor a run
- * of taps changes its meaning part way; and it changes then only if the
- * camera has gone more than PAD_STICK from the direction up already has,
- * so the camera's own small swings leave the controls as they were. */
-#define PAD_REST   20
-#define PAD_STICK  0x2C00   /* a little over a sixth of a turn */
-
+/* Up maps to the nearest cardinal direction. Change the mapping only
+ * with the pad released and the camera settled. Keep the previous
+ * direction at an exact diagonal if it is one of the two nearest. */
 static unsigned pad_turn;   /* in eighths, always even */
 
 static void pad_turn_latch(uint16_t dir) {
-	extern uint16_t persp_yaw;
-	static uint16_t was;
-	static uint32_t let_go;
-	static int rested = 1;
-	uint32_t now = MARS_SYS_COMM12;
-
-	if(!dir && was) let_go = now;
-	if(!dir && now - let_go >= PAD_REST) rested = 1;
-	if(dir && rested) {
-		uint16_t north = (uint16_t)(persp_yaw - 0xC000);
-		int off = (int16_t)(north - (pad_turn << 13));
-		if(off < 0) off = -off;
-		if(off > PAD_STICK) pad_turn = (((uint16_t)(north + 0x2000) >> 14) & 3) * 2;
-		rested = 0;
-	}
-	was = dir;
+	if(dir || !camera_yaw_settled) return;
+	uint16_t north = (uint16_t)(persp_yaw - 0xC000);
+	int off = (int16_t)(north - (pad_turn << 13));
+	if(off < -0x2000 || off > 0x2000)
+		pad_turn = (((uint16_t)(north + 0x2000) >> 14) & 3) * 2;
 }
 
 static uint16_t camera_dir(uint16_t dir) {
@@ -196,6 +180,7 @@ static int contains(const unsigned char *row, int len, const char *word) {
 /* Put text at (x, y) wrapped at word breaks to width w. Returns the row
  * after the last one used. */
 static int put_wrapped(int x, int y, int w, const unsigned char *s, int len, int solid) {
+	int first = y;
 	while(len > 0) {
 		int n = len;
 		if(n > w) {
@@ -203,7 +188,11 @@ static int put_wrapped(int x, int y, int w, const unsigned char *s, int len, int
 			while(n > w / 2 && (s[n] & 0x7F) != ' ') n--;
 			if((s[n] & 0x7F) != ' ') n = w;
 		}
-		text_put(x, y++, (const char *)s, n, TEXT_WHITE, solid);
+		if(solid) {
+			text_fill(HUD_X, y, HUD_W, TEXT_HUD);
+			if(y == first) text_tile(HUD_X, y, TEXT_HUD | HUD_MESSAGE);
+		}
+		text_put(x, y++, (const char *)s, n, solid ? TEXT_HUD : TEXT_WHITE, solid);
 		s += n;
 		len -= n;
 		while(len > 0 && (*s & 0x7F) == ' ') { s++; len--; }
@@ -213,9 +202,8 @@ static int put_wrapped(int x, int y, int w, const unsigned char *s, int len, int
 
 #define RES_SHOWN     150   /* vblanks a new resolution's name stays up */
 
-#if defined(PERSP) && defined(STATS)
 static char *put_number(char *p, const char *label, unsigned n) {
-	char digits[8];
+	char digits[10];
 	int len = 0;
 
 	while(*label) *p++ = *label++;
@@ -223,7 +211,62 @@ static char *put_number(char *p, const char *label, unsigned n) {
 	while(len) *p++ = digits[--len];
 	return p;
 }
-#endif
+
+static char *put_stat(char *p, int value) {
+	if(value < 0) *p++ = '-';
+	return put_number(p, "", value < 0 ? 0u - (unsigned)value : (unsigned)value);
+}
+
+static void hud_stat(int x, int y, int icon, int value, int width) {
+	char field[12];
+	*put_stat(field, value) = 0;
+	text_tile(x, y, TEXT_HUD | icon);
+	text_put(x + 2, y, field, width, TEXT_HUD, 1);
+}
+
+static void hud_status(void) {
+	enum { METER_TILES = 13 };
+	static const char *const hunger[] = { "", "Hungry", "Weak", "Faint" };
+	rogue_status_t stats;
+	rogue_status(&stats);
+
+	for(int x = HUD_X; x < HUD_X + HUD_W; x++)
+		text_tile(x, STATUS_ROW - 1, TEXT_HUD | HUD_LIP);
+	for(int r = STATUS_ROW; r <= STATUS_ROW + 1; r++) {
+		text_fill(HUD_X, r, HUD_W, TEXT_HUD);
+		text_tile(16, r, TEXT_HUD | HUD_RULE);
+	}
+
+	char field[24];
+	char *end = put_stat(field, stats.hp);
+	*end++ = '/';
+	*put_stat(end, stats.hp_max) = 0;
+	text_tile(2, STATUS_ROW, TEXT_HUD | HUD_HEART);
+	text_put(4, STATUS_ROW, field, 12, TEXT_HUD, 1);
+	int hp = stats.hp > stats.hp_max ? stats.hp_max : stats.hp;
+	int filled = hp > 0 && stats.hp_max > 0 ? hp * METER_TILES * 8 / stats.hp_max : 0;
+	if(hp > 0 && !filled) filled = 1;
+	int bar = hp <= stats.hp_max / 4 ? HUD_BAR_LOW : HUD_BAR;
+	for(int i = 0; i < METER_TILES; i++) {
+		int pixels = filled - i * 8;
+		pixels = pixels < 0 ? 0 : pixels > 8 ? 8 : pixels;
+		text_tile(2 + i, STATUS_ROW + 1, TEXT_HUD | (bar + pixels));
+	}
+
+	hud_stat(17, STATUS_ROW, HUD_STAIRS, stats.depth, 3);
+	hud_stat(22, STATUS_ROW, HUD_COIN, stats.gold, 7);
+	if((unsigned)stats.hunger > 0 && (unsigned)stats.hunger < sizeof hunger / sizeof hunger[0]) {
+		text_tile(31, STATUS_ROW, TEXT_HUD | HUD_WARNING);
+		text_put(32, STATUS_ROW, hunger[stats.hunger], 7, TEXT_HUD, 1);
+	}
+	hud_stat(17, STATUS_ROW + 1, HUD_STRENGTH, stats.strength, 3);
+	hud_stat(22, STATUS_ROW + 1, HUD_SHIELD, stats.armor, 3);
+	end = put_stat(field, stats.rank);
+	*end++ = '/';
+	*put_stat(end, stats.experience) = 0;
+	text_tile(27, STATUS_ROW + 1, TEXT_HUD | HUD_STAR);
+	text_put(29, STATUS_ROW + 1, field, 10, TEXT_HUD, 1);
+}
 
 /* Rogue wipes its message line at the next key, and with the world taking
  * turns by itself that can be a moment later. The last message is kept
@@ -233,11 +276,10 @@ static int held_len;
 static uint32_t held_at;
 static int hud_holding;   /* the HUD is showing a message Rogue has wiped */
 
-/* Rogue's message line and a compact status line, over the dungeon. */
+/* The message strip and status panel sit over the dungeon. */
 static void compose_hud(void) {
 	const unsigned char *scr = rogue_screen();
 	int len = row_len(scr, MAP_W);
-	char status[96];
 
 	hud_holding = 0;
 	if(len > 0) {
@@ -253,9 +295,8 @@ static void compose_hud(void) {
 	}
 
 	text_begin();
-	put_wrapped(HUD_X, MSG_ROW, HUD_W, scr, len, 1);
-	rogue_status(status);
-	text_put(HUD_X, STATUS_ROW, status, HUD_W, TEXT_WHITE, 1);
+	put_wrapped(HUD_X + 2, MSG_ROW, HUD_W - 3, scr, len, 1);
+	hud_status();
 #ifdef PERSP
 	{
 		static const char *const res_name[] = { "160x112", "320x112", "320x224", "FOCUS" };
@@ -320,8 +361,7 @@ static void show_page(const unsigned char *cells, int lines, int cols) {
 /* A cursor list over the dungeon. line(i) names entry i. Returns the entry
  * chosen with A or C, or -1 when B backs out. */
 static int choose(int n, const char *(*line)(int)) {
-	static const char blank[] = "                                      ";
-	int sel = 0, width = 0;
+	int sel = 0, first = 0, width = 0;
 
 	for(int i = 0; i < n; i++) {
 		int len = 0;
@@ -330,16 +370,17 @@ static int choose(int n, const char *(*line)(int)) {
 	}
 	width += 3;   /* cursor, and a space of margin on the right */
 	if(width > HUD_W) width = HUD_W;
-	int x = TEXT_W - HUD_X - width;   /* against the right edge, off the hero */
+	int x = TEXT_W - HUD_X - width;
 
 	for(;;) {
+		if(sel < first) first = sel;
+		if(sel >= first + LIST_ROWS) first = sel - LIST_ROWS + 1;
 		compose_hud();
-		for(int i = 0; i < n; i++) {
-			int on = (i == sel);
-			text_put(x, LIST_ROW + i, blank, width, TEXT_WHITE, 1);
-			text_put(x, LIST_ROW + i, on ? "> " : "  ", -1, TEXT_YELLOW, 1);
-			text_put(x + 2, LIST_ROW + i, line(i), HUD_W - 2,
-			         on ? TEXT_YELLOW : TEXT_WHITE, 1);
+		for(int i = first; i < n && i < first + LIST_ROWS; i++) {
+			int row = LIST_ROW + i - first;
+			text_fill(x, row, width, TEXT_HUD);
+			if(i == sel) text_tile(x, row, TEXT_HUD | HUD_CURSOR);
+			text_put(x + 2, row, line(i), width - 2, TEXT_HUD, 1);
 		}
 		text_commit();
 
@@ -396,6 +437,40 @@ static int pick_item(void) {
 
 /* --- what Rogue is waiting for -------------------------------------- */
 
+/* Rogue asks some things that a keyboard answers with one key. Each is a
+ * short list here: the words of the question that give it away, and for
+ * every line the key it stands for. A question that is not here gets A for
+ * yes, C for no and B to back out, which is all most of them want. */
+typedef struct {
+	const char *asks;
+	int n;
+	const char *name[8];
+	const char *keys;
+} ask_t;
+
+static const ask_t asks[] = {
+	{ "do you want a list", 5,
+	  { "Everything", "Potions", "Scrolls", "Rings", "Wands and staffs" }, "*!?=/" },
+	{ "hand or right hand", 2, { "Left hand", "Right hand" }, "lr" },
+};
+#define N_ASKS ((int)(sizeof(asks) / sizeof(asks[0])))
+
+/* A name for something whose use told the player a little: Rogue reads it
+ * a letter at a time, so the one picked waits here to be handed over. */
+static const char *const guesses[] = {
+	"good", "bad", "nothing", "healing", "sight", "sleep", "move", "odd",
+};
+#define N_GUESSES ((int)(sizeof(guesses) / sizeof(guesses[0])))
+static const char *typing;
+
+static const ask_t *asking;
+static const char *ask_line(int i) {
+	return asking->name[i];
+}
+static const char *guess_line(int i) {
+	return guesses[i];
+}
+
 /* Rogue left the cursor on the message line: it wants an answer to
  * whatever it just asked there. */
 static int prompt_key(void) {
@@ -407,6 +482,12 @@ static int prompt_key(void) {
 	 * list, which notices there is nothing to choose and lets go. */
 	static int refused;
 
+	if(typing) {
+		int key = *typing++;
+		if(key) return key;
+		typing = 0;
+		return '\n';
+	}
 	if(contains(scr, len, "--More--")) {
 		if(contains(scr, len, "must identify")) refused = 1;
 		wait_any(game_frame, MORE_WAIT);
@@ -421,6 +502,18 @@ static int prompt_key(void) {
 	return rogue_bot_answer();
 #endif
 	if(contains(scr, len, "for list")) return pick_item();
+	for(int i = 0; i < N_ASKS; i++) {
+		if(!contains(scr, len, asks[i].asks)) continue;
+		asking = &asks[i];
+		int sel = choose(asking->n, ask_line);
+		return sel < 0 ? ESCAPE : asking->keys[sel];
+	}
+	if(contains(scr, len, "call it")) {
+		int sel = choose(N_GUESSES, guess_line);
+		if(sel < 0) return ESCAPE;
+		typing = guesses[sel] + 1;
+		return guesses[sel][0];
+	}
 
 	/* A direction, or a yes or no: A is yes, C is no, B backs out. */
 	for(;;) {
@@ -552,6 +645,40 @@ static void gains(void) {
 static const unsigned char *page_cells;
 static int page_lines, page_cols;
 
+static int dying, death_acknowledged;
+
+void plat_death(void) {
+	dying = 1;
+	game_death();
+}
+
+static void show_headstone(const unsigned char *cells) {
+	int first = 0, last = MAP_H - 2;
+	while(first < last && !row_len(cells + first * MAP_W, MAP_W)) first++;
+	while(last > first && !row_len(cells + last * MAP_W, MAP_W)) last--;
+
+	int left = MAP_W, right = 0;
+	for(int r = first; r <= last; r++) {
+		const unsigned char *row = cells + r * MAP_W;
+		int len = row_len(row, MAP_W);
+		if(len > right) right = len;
+		int lead = row_lead(row, len);
+		if(len && lead < left) left = lead;
+	}
+	int x = (TEXT_W - (right - left)) / 2;
+	if(x < 0) x = 0;
+	int y = 8;
+	text_begin();
+	text_put(15, 4, "GAME OVER", -1, TEXT_YELLOW, 0);
+	for(int r = first; r <= last && y < 23; r++, y++) {
+		const unsigned char *row = cells + r * MAP_W;
+		int len = row_len(row, MAP_W);
+		if(len > left) text_put(x, y, (const char *)row + left, len - left, TEXT_WHITE, 0);
+	}
+	text_put(8, 24, "PRESS START TO PLAY AGAIN", -1, TEXT_WHITE, 0);
+	text_commit();
+}
+
 int plat_getkey(void) {
 	const unsigned char *scr = rogue_screen();
 	const unsigned char *last = scr + (MAP_H - 1) * MAP_W;
@@ -562,11 +689,23 @@ int plat_getkey(void) {
 		wait_any(game_blank, PAGE_WAIT);
 		return ' ';
 	}
-	/* The tombstone is drawn on the main screen and wants a return. */
+	/* Rogue's score prompt follows the tombstone on the main screen. */
 	if(contains(last, MAP_W, "[Press return")) {
-		sfx(SFX_DEATH);
-		show_page(scr, MAP_H, MAP_W);
-		wait_any(game_blank, PAGE_WAIT);
+		if(dying) {
+			show_headstone(scr);
+			sfx(SFX_DEATH);
+			prev_pad = MARS_SYS_COMM8;
+#ifdef BOT
+			wait_any(game_blank, 120);
+#else
+			while(!(poll(game_blank).pressed & SEGA_CTRL_START));
+#endif
+			death_acknowledged = 1;
+		} else {
+			game_blank();
+			show_page(scr, MAP_H, MAP_W);
+			wait_any(game_blank, PAGE_WAIT);
+		}
 		return '\n';
 	}
 
@@ -611,15 +750,17 @@ static void restart(void) {
 /* The game ended (death, victory or quitting). */
 void plat_exit(int status) {
 	(void)status;
-	text_begin();
-	text_put(16, 12, "THE END", -1, TEXT_YELLOW, 0);
-	text_put(8, 14, "PRESS START TO PLAY AGAIN", -1, TEXT_WHITE, 0);
-	text_commit();
+	if(!death_acknowledged) {
+		text_begin();
+		text_put(16, 12, "THE END", -1, TEXT_YELLOW, 0);
+		text_put(8, 14, "PRESS START TO PLAY AGAIN", -1, TEXT_WHITE, 0);
+		text_commit();
 #ifdef BOT
-	wait_any(game_blank, 120);
+		wait_any(game_blank, 120);
 #else
-	while(!(poll(game_blank).pressed & SEGA_CTRL_START));
+		while(!(poll(game_blank).pressed & SEGA_CTRL_START));
 #endif
+	}
 
 	text_begin();
 	text_commit();
