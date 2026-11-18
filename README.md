@@ -140,7 +140,8 @@ and the tiles next to him whichever way the camera looks. Coarse columns
 are drawn right across the screen, and then two fine rays per column draw
 the window over them; a fine ray starts 32 rows below the window, so that
 whatever stands that near and reaches up into the window is in place by the
-first row that shows, and what it draws down there is put back afterwards. Over two bot-played levels in ares a frame
+first row that shows. Floor down there is stepped over, and whatever else
+it draws there is put back afterwards. Over two bot-played levels in ares a frame
 took 5671 ticks at the median and 7681 at worst, between 30 and 20 frames
 a second. The game starts in it; `make RES=0` starts in 160x112 (RES is
 0 to 3).
@@ -165,9 +166,9 @@ not jump. Turning the camera from the flat view tips it back out first.
 - Each cell's facts sit in one 16 byte record, a cache line, and a floor's
   colours in 64 bytes.
 - Measured on a MiSTer with `tools/mbench.sh` (a fixed dungeon, the camera
-  going once round it, 256 frames): a frame takes 4529 FRT ticks on average
-  and 5145 at worst at 160x112, inside the 6000 that 30 frames a second
-  allows. Focus mode takes 7750, about 20 frames a second.
+  going once round it, 256 frames): a frame takes 4298 FRT ticks on average
+  and 4894 at worst at 160x112, inside the 6000 that 30 frames a second
+  allows. Focus mode takes 7341 and 8027, inside the 9000 that 20 allow.
 - What was learned getting there, each step timed on the MiSTer:
   - It started at 6105. ares said 3307 for the same frames, so ares is for
     checking pictures and counting instructions, not for frame rates.
@@ -197,6 +198,16 @@ not jump. Turning the camera from the flat view tips it back out first.
     twice, constants loaded every pixel) that went away when the loop was
     written as a run with the pixel in a variable: 4766 to 4529 at
     160x112, with no assembly.
+  - The SH-2 shifts one place at a time, so the compiler shifts a signed
+    number right by calling a routine, and that routine is in ROM. Two
+    table lookups a cell did it. Shifting an unsigned number there, which
+    is done in line, gained 4 to 5 percent.
+  - In focus mode the copy to the second row of the window's band cost 5
+    percent and the run-up of the fine rays 5 more. Giving each CPU
+    columns in pairs, so a copy is a long word, and not drawing floor in
+    the run-up got 2 of that back.
+  - A smaller window is not a way to 30 frames a second in focus: 48 by
+    76 still took 6774.
   - `ares-headless --profile` and `tools/profile.py` found it. Measure
     first.
 - Creatures are real voxel models here: `tools/bake_models.py --solid` turns

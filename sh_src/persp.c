@@ -298,8 +298,10 @@ void persp_creatures(void) {
     } while (0)
 
 /* The tables, by depth. */
-#define INV(t)  inv_t[((t) - T_NEAR) >> INV_STEP]
-#define RISE(t) rise_t[((t) - T_NEAR) >> INV_STEP]
+/* The shift is of an unsigned number because the SH-2 shifts one place at
+ * a time, and the compiler calls a routine in ROM to shift a signed one. */
+#define INV(t)  inv_t[(uint32_t)((t) - T_NEAR) >> INV_STEP]
+#define RISE(t) rise_t[(uint32_t)((t) - T_NEAR) >> INV_STEP]
 /* Where the ray is at a depth: the eye plus direction times depth, as
  * Q20 times Q12 so the voxel number is simply the product's high word. */
 #define AT_X(t12) ((int)(((int64_t)dx20 * (int32_t)(t12) + ex48) >> 32))
