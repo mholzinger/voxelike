@@ -5,6 +5,7 @@
 #include "sfx.h"
 #include "sh2zam/sh2zam.h"
 #include "../port/plat.h"
+#include "version.h"
 
 uint32_t lastTick = 0;
 uint16_t currentFB = 0;
@@ -454,6 +455,7 @@ int m_main(void) {
 	text_begin();
 	text_put(14, 10, "VOXELIKE32X", -1, TEXT_YELLOW, 0);
 	text_put(14, 14, "PRESS START", -1, TEXT_WHITE, 0);
+	text_put((TEXT_W - (int)sizeof VERSION + 1) / 2, 24, VERSION, -1, TEXT_WHITE, 0);
 	text_commit();
 #if defined(BOT) || defined(BENCH)
 	/* Nobody is there to press it. */

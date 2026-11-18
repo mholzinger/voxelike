@@ -5,3 +5,4 @@ shots/
 .DS_Store
 sh_src/baked.h
 sh_src/baked3d.h
+sh_src/version.h

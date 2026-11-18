@@ -23,6 +23,7 @@ make            # rom/voxelike.32x: the game
 make FLAT=1     # the flat view alone, without the 3D renderer
 make STATS=1    # show frames a second and the time to draw one
 make BENCH=7    # the same 256 frames every run, for timing (tools/mbench.sh)
+make VERSION=0.1.0-alpha.1   # the name on the title screen; without it, dev- and the commit
 make RES=0      # start in a resolution: 0 160x112, 1 320x112, 2 320x224, 3 focus (the default)
 make shot       # build, run headless in ares, write shots/latest.png
 make shot FRAMES=320 INPUT=keys.csv

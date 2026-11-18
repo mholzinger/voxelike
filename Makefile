@@ -71,6 +71,8 @@ RGFLAGS = -m2 -mb -O2 -fomit-frame-pointer -ffreestanding -Iport/include -Irogue
 #   make STATS=1    show frames a second and the time to draw one
 #   make PERSP=2    turn the camera by itself, for measuring
 #   make BOT=1      a ROM that plays itself, for tools/botrun.py
+#   make VERSION=v the name on the title screen (a release's; otherwise the
+#                   commit's)
 #   make BENCH=n    the same picture every run, for timing: dungeon n, the
 #                   hero standing in it, and the camera going round him. Each
 #                   turn of the camera is the same 256 frames, and the yellow
@@ -110,6 +112,17 @@ $(PERSPSTAMP):
 	@sleep 1
 	@touch $@
 $(BOTOBJS): $(BOTSTAMP)
+
+# What the title screen calls this build. A release is made with
+# make VERSION=0.1.0-alpha.3; anything else names the commit it was built
+# from. The header is only written when the name changes.
+VERSION ?= dev-$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+sh_src/version.h: FORCE
+	@echo '#define VERSION "$(VERSION)"' | cmp -s - $@ || \
+		{ sleep 1; echo '#define VERSION "$(VERSION)"' > $@; echo "VERSION $(VERSION)"; }
+sh_src/m_main.o: sh_src/version.h
+.PHONY: FORCE
+FORCE:
 $(PERSPOBJS): $(PERSPSTAMP)
 
 # SH2ZAM fixed-point math (vendored subset, MIT): its own dialect.
@@ -236,6 +249,6 @@ clean:
 	rm -f $(MDOBJS) $(SHOBJS) $(MDOBJS:.o=.d) $(SHOBJS:.o=.d)
 	rm -f $(MDTARGET).bin $(MDTARGET).elf $(MDTARGET).lst
 	rm -f $(TARGET).32x $(TARGET).elf $(TARGET).lst
-	rm -f sh_src/baked.h
+	rm -f sh_src/baked.h sh_src/version.h
 
 -include $(MDOBJS:.o=.d) $(SHOBJS:.o=.d)
