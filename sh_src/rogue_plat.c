@@ -455,6 +455,7 @@ static int step_key(uint16_t pad_dir) {
 static int command_key(void) {
 	static uint16_t blocked;   /* held direction that goes nowhere */
 	uint32_t idle_since = MARS_SYS_COMM12;
+	(void)idle_since;          /* unused when IDLE_TURN is 0 */
 
 	rogue_idle(0);
 	plat_step_frames = STEP;
