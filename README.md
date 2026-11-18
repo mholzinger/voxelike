@@ -181,6 +181,10 @@ not jump. Turning the camera from the flat view tips it back out first.
     6105 to 4766.
   - The two SH-2s slow each other: one drawing its half alone took 5303
     where both together took 6105.
+  - The cache's two "do not replace" bits (OD and ID in the SH-2's CCR)
+    are no help set around a whole frame's rays. With data kept out the
+    frame took 13653 where it takes 4765; with code kept out it did not
+    finish in the time allowed.
   - `ares-headless --profile` and `tools/profile.py` found it. Measure
     first.
 - Creatures are real voxel models here: `tools/bake_models.py --solid` turns
