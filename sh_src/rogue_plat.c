@@ -14,10 +14,12 @@ extern void game_blank(void);
 
 int plat_screen_changed = 1;
 
-/* The player's own turns take STEP frames on screen. Left alone, the world
- * takes a turn of its own every IDLE_TURN vblanks, and things stroll. */
+/* The player's own turns take STEP frames on screen. Nothing happens
+ * between them: IDLE_TURN is how many vblanks the world would wait before
+ * taking a turn of its own, and 0 is never. It was 24 once, and a hero
+ * standing still to think was killed where he stood. */
 #define STEP          8
-#define IDLE_TURN     24
+#define IDLE_TURN     0
 int plat_step_frames = STEP;
 
 #define DIR_MASK      (SEGA_CTRL_UP | SEGA_CTRL_DOWN | SEGA_CTRL_LEFT | SEGA_CTRL_RIGHT)
@@ -502,7 +504,7 @@ static int command_key(void) {
 			text_commit();
 		}
 #endif
-		if(MARS_SYS_COMM12 - idle_since >= IDLE_TURN) {
+		if(IDLE_TURN && MARS_SYS_COMM12 - idle_since >= IDLE_TURN) {
 			rogue_idle(1);
 			plat_step_frames = IDLE_TURN;
 			return '.';

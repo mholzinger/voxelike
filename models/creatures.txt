@@ -16,18 +16,18 @@
 # half takes the layer's commonest material.
 
 = @ hero
-..hhhh.. ..####.. ..hhhh..
-.hhhhhh. ..####.. .hhhhhh.
-.sesses. ..####.. .hhhhhh.
-.ssssss. ..####.. .shhhhs.
-GGGGGGGG ...##... GGGGGGGG
-sGGGGGGs ...##... sGGGGGGs
-.GGGGGG. ..####.. .GGGGGG.
-.nnnnnn. ..####.. .nnnnnn.
-.GGGGGG. ..####.. .GGGGGG.
-.GG..GG. ...##... .GG..GG.
-.NN..NN. ...##... .NN..NN.
-.NN..NN. ...###.. .NN..NN.
+..hhhh.. .#####.. ..hhhh..
+.hhhhhh. .#####.. .hhhhhh.
+.sesses. .#####.. .hhhhhh.
+.ssssss. .#####.. .shhhhs.
+GGGGGGGG ..###... GGGGGGGG
+sGGGGGGs ..###... sGGGGGGs
+.GGGGGG. .#####.. .GGGGGG.
+.nnnnnn. .#####.. .nnnnnn.
+.GGGGGG. .#####.. .GGGGGG.
+.GG..GG. ..###... .GG..GG.
+.NN..NN. ..###... .NN..NN.
+.NN..NN. ..####.. .NN..NN.
 
 = A aquator
 ..bbbb.. ..####..

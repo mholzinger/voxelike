@@ -265,10 +265,12 @@ new rank, a blip in menus, and a dirge at the tombstone.
 
 ## Time
 
-Rogue is still turn based inside, and its source is still untouched. Left
-alone for 24 frames, the port hands Rogue a rest command so monsters keep
-moving; the command menu, prompts and text pages stop the clock. Those idle
-turns run with the hunger daemon switched off, so thinking costs no food.
+Rogue is turn based, and so is this: nothing moves until the hero does. A
+turn is shown over 8 frames, so holding a direction walks smoothly and
+monsters move as he moves. C rests a turn. (The port can hand Rogue a rest
+command by itself when the pad is left alone, so that monsters keep moving:
+set `IDLE_TURN` to a number of frames. Those turns run with the hunger
+daemon switched off. It is off because the hero died of it.)
 A `--More--` in the dungeon moves on by itself after a second, and the last
 message stays up for a second and a half even though Rogue has wiped it.
 The numbers are `STEP`, `IDLE_TURN`, `MORE_WAIT` and `MSG_HOLD` in
