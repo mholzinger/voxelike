@@ -69,25 +69,30 @@ void vox_init(void);
  * depth is the dungeon level, so a new level is not mistaken for a massacre.
  * A creature that moved walks to its new cell over `frames` frames, one that
  * lost hit points flashes, one that died falls to pieces. Only what changed
- * is redrawn afterwards. */
-void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
+ * is redrawn afterwards. Returns whether terrain or lighting changed. */
+int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                      const int *room, int depth, int frames, int stage_defeat);
 
 /* Hold one defeated opponent on screen until the combat camera is ready. */
 int vox_defeat_target(int *x, int *y);
+void vox_defeat_flash(void);
 void vox_release_defeat(void);
+
+/* Camera target for a landed melee hit while the opponent is nearby. */
+int vox_duel_target(int *x, int *y);
 
 /* A creature struck at the hero: have it jab that way, a moment from now. */
 void vox_jab(uint32_t id);
 
 /* Move every walking creature on by one frame. */
 void vox_animate(void);
+int vox_particles_active(void);
 
 /* Have the hero jab toward a neighbouring cell and come back. */
 void vox_hero_lunge(int dx, int dy);
 
-/* Preserve the hero's colours during the close-up. */
-void vox_hero_clear_flash(void);
+/* Clear or start the hero's hit flash. */
+void vox_hero_hit_flash(int on);
 
 /* Shed model-coloured chunks and a separate spray. A flat build uses the
  * hero sprite in place of the equipped 3D model. */

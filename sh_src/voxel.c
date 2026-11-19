@@ -74,6 +74,8 @@ static ent_t ents[MAX_ENTS];
 static int n_ents;
 static ent_t defeated;
 static int defeat_staged;
+static uint32_t duel_foe;
+static int hero_hit_pending;
 
 /* A loose voxel, in sixteenths: what a creature leaves when it dies. */
 typedef struct {
@@ -88,8 +90,7 @@ static part_t parts[MAX_PARTS];
 static int n_parts;
 static int last_depth;
 
-#define FLASH_HERO   (MAT(MT_RED) + 7)
-#define FLASH_OTHER  (MAT(MT_PAPER) + 7)
+#define HIT_FLASH    (MAT(MT_PAPER) + 7)
 
 /* Which way a step of (dx, dy) looks. */
 static uint8_t facing(int dx, int dy) {
@@ -108,7 +109,6 @@ static const int8_t lunge_reach[LUNGE + 1] = { 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 
 /* How high the ground of each cell stands, from the game, taken in once per
  * level. Rooms stand on plinths of different heights and passages run
  * between them at ground level. */
-static uint8_t ground[MAP_H][MAP_W];
 #define STAIR_DROP  2      /* the stairs' cell is this much lower than its room */
 
 /* A front face is darker than the top face lit by the same light. */
@@ -169,13 +169,12 @@ static void build_models(void) {
 
     for (int lx = 0; lx < CELL; lx++) {
         for (int ly = 0; ly < CELL; ly++) {
-            int edge = (lx == 0 || ly == 0);
             int speck = ((lx * 5 + ly * 3) ^ (lx * ly)) & 3;
 
             col_set(&vox_models[M_FLOOR].col[lx][ly], 1,
-                    edge ? MAT(MT_GROUT) : MAT(MT_STONE));
+                    terrain_floor[ly][lx]);
             col_set(&vox_models[M_FLOOR2].col[lx][ly], 1,
-                    edge ? MAT(MT_GROUT) : MAT(MT_STONE2));
+                    terrain_floor[ly][(CELL - lx) & (CELL - 1)]);
             col_set(&vox_models[M_PASSAGE].col[lx][ly], 1,
                     speck ? MAT(MT_DIRT) : MAT(MT_DIRT2));
 
@@ -187,13 +186,13 @@ static void build_models(void) {
                 int brick = (lx + ((course & 1) ? 2 : 0)) >> 2;
                 w->c[z] = ((brick + course) & 1) ? MAT(MT_BRICKA) : MAT(MT_BRICKB);
             }
-            w->c[7] = MAT(MT_CAP);
+            w->c[7] = terrain_wall_cap[ly][lx];
 
             /* A room's near wall is cut down so it cannot hide the row of
              * floor behind it from this camera. */
             vcol_t *wl = &vox_models[M_WALL_LOW].col[lx][ly];
             col_set(wl, 2, MAT(MT_BRICKB));
-            wl->c[1] = MAT(MT_CAP);
+            wl->c[1] = terrain_wall_cap[ly][lx];
 
             /* Door in a horizontal wall: posts left and right. */
             vcol_t *dh = &vox_models[M_DOOR_H].col[lx][ly];
@@ -452,6 +451,32 @@ int vox_defeat_target(int *x, int *y) {
     return 1;
 }
 
+void vox_defeat_flash(void) {
+    if (!defeat_staged) return;
+    defeated.flash = FLASH;
+    defeated.flash_wait = 0;
+}
+
+static int adjacent_to_hero(const ent_t *e) {
+    int dx = e->tx - vox_hero_cx * CELL;
+    int dy = e->ty - vox_hero_cy * CELL;
+    return dx >= -CELL && dx <= CELL && dy >= -CELL && dy <= CELL;
+}
+
+int vox_duel_target(int *x, int *y) {
+    if (!duel_foe) return 0;
+    for (int i = 0; i < n_ents; i++) {
+        const ent_t *e = &ents[i];
+        if (e->id != duel_foe) continue;
+        if (!adjacent_to_hero(e)) break;
+        *x = e->x + CELL / 2;
+        *y = e->y + CELL / 2;
+        return 1;
+    }
+    duel_foe = 0;
+    return 0;
+}
+
 void vox_release_defeat(void) {
     if (!defeat_staged) return;
     stale_ent(&defeated);
@@ -460,12 +485,13 @@ void vox_release_defeat(void) {
     defeat_staged = 0;
 }
 
-void vox_hero_clear_flash(void) {
+void vox_hero_hit_flash(int on) {
     for (int i = 0; i < n_ents; i++) {
         ent_t *e = &ents[i];
         if (e->id != HERO_ID) continue;
         stale_ent(e);
-        e->flash = e->flash_wait = 0;
+        e->flash = on ? FLASH : 0;
+        e->flash_wait = 0;
         return;
     }
 }
@@ -521,6 +547,8 @@ void vox_hero_shatter(const vcol_t model[CELL][CELL]) {
         return;
     }
 }
+
+int vox_particles_active(void) { return n_parts != 0; }
 
 static void parts_animate(void) {
     for (int i = 0; i < n_parts; ) {
@@ -603,7 +631,11 @@ void vox_jab(uint32_t id) {
     e->wait = JAB_WAIT;
     if (e->ldx || e->ldy) e->face = facing(e->ldx, e->ldy);
     /* If the hero was just hurt, this is the blow that did it. */
-    if (hero->flash) hero->flash_wait = JAB_WAIT + 2;
+    if (hero_hit_pending) {
+        hero->flash_wait = JAB_WAIT + 2;
+        if (!duel_foe && adjacent_to_hero(e)) duel_foe = id;
+        hero_hit_pending = 0;
+    }
 }
 
 int vox_piece(int i, int *x, int *y, int *z, unsigned *colour) {
@@ -626,7 +658,7 @@ int vox_creature(int i, vox_creature_t *c) {
     c->face = e->face;
     if (defeat_staged && e->id == HERO_ID)
         c->face = facing(defeated.x - e->x, defeated.y - e->y);
-    c->flash = (e->flash && !e->flash_wait) ? (e->id == HERO_ID ? FLASH_HERO : FLASH_OTHER) : 0;
+    c->flash = (e->flash && !e->flash_wait) ? HIT_FLASH : 0;
     return 1;
 }
 
@@ -644,20 +676,17 @@ void vox_hero_lunge(int dx, int dy) {
 
 /* Row 0 of Rogue's screen is its message line and the last row its status
  * line; neither is dungeon. */
-void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
+int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                      const int *room, int depth, int frames, int stage_defeat) {
     vox_under_fn under = src->under;
     int same_level = (depth == last_depth);
+    int terrain_changed = !same_level;
 
     last_depth = depth;
+    hero_hit_pending = 0;
     if (!same_level) {
         frames = 0;
-        for (int cy = 1; cy < MAP_H - 1; cy++) {
-            for (int cx = 0; cx < MAP_W; cx++) {
-                int g = src->ground(cx, cy);
-                ground[cy][cx] = (uint8_t)(g > LIFT_MAX ? LIFT_MAX : g);
-            }
-        }
+        duel_foe = 0;
     }
     for (int i = 0; i < n_ents; i++) ents[i].seen = 0;
 
@@ -692,8 +721,19 @@ void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                 if (light < LIGHT_NEAR) light = LIGHT_MEMORY;
             }
 
-            int lift = tile == M_VOID ? 0 : ground[cy][cx];
-            if (tile == M_STAIRS) lift = lift > STAIR_DROP ? lift - STAIR_DROP : 0;
+            int lift = 0;
+            if (tile != M_VOID) {
+                unsigned old = vox_tile[cy][cx];
+                /* Room height is fixed for the level. Query it when this
+                 * tile first appears or changes to or from a stair. */
+                if (same_level && old != M_VOID && (old == M_STAIRS) == (tile == M_STAIRS)) {
+                    lift = vox_lift[cy][cx];
+                } else {
+                    lift = src->ground(cx, cy);
+                    if (lift > LIFT_MAX) lift = LIFT_MAX;
+                    if (tile == M_STAIRS) lift = lift > STAIR_DROP ? lift - STAIR_DROP : 0;
+                }
+            }
 
             if (tile != vox_tile[cy][cx] || light != vox_light[cy][cx] ||
                 lift != vox_lift[cy][cx]) {
@@ -701,6 +741,7 @@ void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                 vox_light[cy][cx] = light;
                 vox_lift[cy][cx] = (uint8_t)lift;
                 stale_cell(cx, cy);
+                terrain_changed = 1;
             }
 
             if (ent >= 0) {
@@ -742,12 +783,15 @@ void vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                 e->flash = FLASH;
                 vox_events |= e->id == HERO_ID ? VOX_HURT : VOX_HIT;
                 e->flash_wait = (uint8_t)(e->id == HERO_ID ? 0 : 2);
+                if (e->id == HERO_ID) hero_hit_pending = 1;
+                else if (adjacent_to_hero(e)) duel_foe = e->id;
             }
             e->hp = (int16_t)hp;
         }
         i++;
     }
     hero_follow();
+    return terrain_changed;
 }
 
 void vox_palette(int light) {
@@ -843,7 +887,7 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
         in[k].sf = vox_front_shade[st];
         in[k].n = ENT_ROWS;
         in[k].flash = (e->flash && !e->flash_wait)
-                    ? (e->id == HERO_ID ? FLASH_HERO : FLASH_OTHER) : 0;
+                    ? HIT_FLASH : 0;
     }
     for (int i = 0; i < n_parts && n_in < MAX_COL_ENTS; i++) {
         const part_t *p = &parts[i];

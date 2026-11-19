@@ -299,7 +299,7 @@ static void compose_hud(void) {
 	hud_status();
 #ifdef PERSP
 	{
-		static const char *const res_name[] = { "160x112", "320x112", "320x224", "FOCUS" };
+		static const char *const res_name[] = { "160x112", "320x112", "320x224" };
 		extern int cam_res;
 		extern uint32_t cam_res_at;
 #ifdef STATS

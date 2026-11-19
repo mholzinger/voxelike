@@ -70,8 +70,7 @@ uint16_t perf_fps, perf_mean, perf_worst;
  *   Y held          tip the view over into the flat one, or back out of it
  *   (nothing)       it swings if a wall hides the hero
  *   MODE held       pull back to show more, for as long as it is held
- *   MODE tapped     next picture resolution: 160x112, 320x112, 320x224, and
- *                   fine around the hero with the rest coarse
+ *   MODE tapped     next picture resolution: 160x112, 320x112, 320x224
  * The flat view is the fixed renderer's own, at its full frame rate; the
  * perspective one flattens until the two pictures meet and then hands over.
  * Turning the camera from the flat view tips it back first. */
@@ -81,15 +80,34 @@ uint16_t perf_fps, perf_mean, perf_worst;
 #define SWING_GENTLY 0x300 /* and at most this when it moves by itself */
 #define TIP        8       /* of 256 per frame: tipping over takes half a second */
 #define NORTH      0xC000
+#define NORMAL_PULL (-54)  /* eye distance 111 instead of 122, 10% tighter */
+#define FIGHT_PULL  (-144)  /* same framing during a duel and its finish */
 
 static int cam_pull;       /* 0 close in .. 256 pulled back */
 static int cam_flat;       /* 0 full perspective .. 256 none */
 #ifndef PERSP_RES
-#define PERSP_RES PERSP_RES_FOCUS
+#define PERSP_RES PERSP_RES_WIDE
 #endif
 int cam_res = PERSP_RES;   /* PERSP_RES_x; make RES=n picks the one to start in */
 uint32_t cam_res_at;       /* vblank it was last changed on, 0 for never */
 static int flat_wanted;
+static int duel_mix, duel_x, duel_y;
+
+static int duel_pull(int pull) {
+	return pull + (FIGHT_PULL - pull) * duel_mix / 256;
+}
+
+static void duel_centre(int *x, int *y) {
+	*x += (duel_x - *x) * duel_mix / 512;
+	*y += (duel_y - *y) * duel_mix / 512;
+}
+
+
+/* Keep the pulled-back and flat endpoints as designed. */
+static int gameplay_pull(void) {
+	return cam_pull + NORMAL_PULL * (256 - cam_pull) * (256 - cam_flat) / (256 * 256);
+}
+
 
 /* Allow a short pause between taps before automatic wall recovery. */
 #define TAP_GAP       20
@@ -268,11 +286,13 @@ static void sounds(void) {
 static void load_dungeon_screen(int stage_defeat) {
 	int room[4];
 	plat_screen_changed = 0;
-	vox_load_screen(rogue_screen(), &source, rogue_room(room) ? room : 0,
-	                rogue_depth(), plat_step_frames, stage_defeat);
+	int terrain_changed = vox_load_screen(rogue_screen(), &source, rogue_room(room) ? room : 0,
+	                                      rogue_depth(), plat_step_frames, stage_defeat);
 	for(uint32_t id; (id = rogue_attacker()) != 0; ) vox_jab(id);
 #ifdef PERSP
-	persp_sync();
+	persp_sync(terrain_changed);
+#else
+	(void)terrain_changed;
 #endif
 }
 
@@ -323,16 +343,23 @@ static uint16_t defeat_yaw(int x, int y, int dx, int dy) {
 /* Use a private camera angle and return to the gameplay view before
  * reading the next command. Rogue has already resolved the killing hit. */
 static void play_defeat(int enemy_x, int enemy_y) {
-	enum { APPROACH = 15, IMPACT = 21, RETREAT = 33, END = 49, ZOOM = 144 };
+	enum { APPROACH = 15, FLASH_AT = 17, IMPACT = 22, RETREAT = 34, END = 50 };
 	int hx = vox_hero_x + CELL / 2, hy = vox_hero_y + CELL / 2;
 	int dx = enemy_x - hx, dy = enemy_y - hy;
 	int swing = (int16_t)(defeat_yaw(enemy_x, enemy_y, dx, dy) - persp_yaw);
+	int from_x = hx, from_y = hy;
+	duel_centre(&from_x, &from_y);
+	int from_pull = duel_pull(NORMAL_PULL);
 	int previous = 0;
 	uint32_t start = MARS_SYS_COMM12;
 	update_hero_gear();
 	persp_creatures(0);
 	for(;;) {
 		int t = clamp((int)(MARS_SYS_COMM12 - start), 0, END);
+		if(t >= FLASH_AT && t < IMPACT && previous < FLASH_AT) {
+			vox_defeat_flash();
+			persp_creatures(0);
+		}
 		if(t >= IMPACT && previous < IMPACT) {
 			vox_release_defeat();
 			sounds();
@@ -346,14 +373,19 @@ static void play_defeat(int enemy_x, int enemy_y) {
 		      - clamp(t - RETREAT, 0, END - RETREAT) * 256 / (END - RETREAT);
 		int eased = ((p * p >> 8) * (768 - 2 * p)) >> 8;
 		uint16_t yaw = (uint16_t)(persp_yaw + swing * eased / 256);
-		int x = hx + (dx * eased / 512), y = hy + (dy * eased / 512);
-		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, yaw,
-		             -ZOOM * eased / 256, 0, cam_res);
+		int approach = clamp(t, 0, APPROACH) * 256 / APPROACH;
+		int remaining = 256 - (((approach * approach >> 8) * (768 - 2 * approach)) >> 8);
+		int x = hx + dx * eased / 512 + (from_x - hx) * remaining / 256;
+		int y = hy + dy * eased / 512 + (from_y - hy) * remaining / 256;
+		int pull = NORMAL_PULL + (FIGHT_PULL - NORMAL_PULL) * eased / 256 +
+		           (from_pull - NORMAL_PULL) * remaining / 256;
+		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, yaw, pull, 0, cam_res);
 		swapBuffers();
 		if(t == END) break;
 		previous = t;
 	}
 	anim_tick = MARS_SYS_COMM12;
+	duel_mix = 0;
 }
 
 #endif
@@ -368,7 +400,8 @@ void game_frame(void) {
 	stage_defeat = PERSP == 1 && !manual && !cam_flat && !cam_pull && !flat_wanted &&
 	               camera_yaw_settled;
 #endif
-	if(plat_screen_changed) load_dungeon_screen(stage_defeat);
+	int screen_changed = plat_screen_changed;
+	if(screen_changed) load_dungeon_screen(stage_defeat);
 	if(blanked) {
 		vox_palette(VOX_FULL_LIGHT);
 		blanked = 0;
@@ -385,6 +418,12 @@ void game_frame(void) {
 	int steps = clamp((int)(MARS_SYS_COMM12 - anim_tick), 1, 3);
 	anim_tick = MARS_SYS_COMM12;
 	int first = cam_snap;
+#ifdef PERSP
+	int duel_step = steps * 32;
+#endif
+#if defined(PERSP) && !defined(STATS)
+	int particles = vox_particles_active();
+#endif
 	while(steps-- > 0) {
 		vox_animate();
 		int tx = clamp(vox_hero_x + CELL / 2 - VIEW_W / 2, CAM_X_MIN, CAM_X_MAX);
@@ -400,6 +439,12 @@ void game_frame(void) {
 
 #ifdef PERSP
 	static int settle, was_flat;
+#if !defined(STATS)
+	static struct {
+		int valid, x, y, pull, flat, res;
+		uint16_t yaw;
+	} shown;
+#endif
 	camera_buttons();
 	if(PERSP > 1) persp_yaw += 0x100;   /* PERSP=2 turns by itself, for measuring */
 
@@ -413,11 +458,22 @@ void game_frame(void) {
 
 	int enemy_x, enemy_y;
 	if(vox_defeat_target(&enemy_x, &enemy_y)) play_defeat(enemy_x, enemy_y);
+	if(PERSP != 1 || first || manual || cam_flat || cam_pull || flat_wanted) {
+		duel_mix = 0;
+	} else if(vox_duel_target(&duel_x, &duel_y)) {
+		duel_mix = clamp(duel_mix + duel_step, 0, 256);
+	} else {
+		duel_mix = clamp(duel_mix - duel_step, 0, 256);
+	}
+#if !defined(STATS)
+	if(is_flat) shown.valid = 0;
+#endif
 	if(!is_flat) {
 		/* While anything moves, and for the frame it comes to rest, and
 		 * when the hero has changed what he wears or holds. */
 		int dressed = update_hero_gear();
-		if(vox_moving || settle || dressed) persp_creatures(0);
+		int creatures_changed = vox_moving || settle || dressed;
+		if(creatures_changed) persp_creatures(0);
 		settle = vox_moving;
 
 		/* Flat, the picture is centred where the fixed view's camera is,
@@ -426,9 +482,30 @@ void game_frame(void) {
 		int fx = cam_x + VIEW_W / 2, fy = cam_y + VIEW_H / 2 + 4;
 		int px = hx + (((fx - hx) * cam_flat) >> 8);
 		int py = hy + (((fy - hy) * cam_flat) >> 8);
+		duel_centre(&px, &py);
+		int pull = duel_pull(gameplay_pull());
+
+#if !defined(STATS)
+		/* The visible buffer is already valid. Keep polling and animating
+		 * on the vblank clock, without sending duplicate rays. */
+		if(shown.valid && !first && !screen_changed && !creatures_changed && !particles &&
+		   shown.x == px && shown.y == py && shown.yaw == persp_yaw &&
+		   shown.pull == pull && shown.flat == cam_flat && shown.res == cam_res) {
+			game_render_ticks = 0;
+			wait_vblank();
+			return;
+		}
+		shown.valid = 1;
+		shown.x = px;
+		shown.y = py;
+		shown.yaw = persp_yaw;
+		shown.pull = pull;
+		shown.flat = cam_flat;
+		shown.res = cam_res;
+#endif
 
 		uint16_t p0 = frt_read();
-		persp_render((uint16_t *)&MARS_FRAMEBUFFER, px, py, persp_yaw, cam_pull, cam_flat, cam_res);
+		persp_render((uint16_t *)&MARS_FRAMEBUFFER, px, py, persp_yaw, pull, cam_flat, cam_res);
 		game_render_ticks = (uint16_t)(frt_read() - p0);
 		swapBuffers();
 
@@ -474,11 +551,12 @@ void game_death(void) {
 	enum { PUSH = 24, BURST = 32, RETREAT = 59, END = 92 };
 #ifdef PERSP
 	update_hero_gear();
-	int start_pull = cam_pull;
+	int start_pull = duel_pull(gameplay_pull());
 	int start_flat = cam_flat;
+	const int closest = -172;
 #endif
 	load_dungeon_screen(0);
-	vox_hero_clear_flash();
+	vox_hero_hit_flash(0);
 #ifdef PERSP
 	persp_creatures(0);
 #endif
@@ -488,6 +566,8 @@ void game_death(void) {
 #ifdef PERSP
 	int hx = vox_hero_cx * CELL + CELL / 2, hy = vox_hero_cy * CELL + CELL / 2;
 	int fx = cam_x + VIEW_W / 2, fy = cam_y + VIEW_H / 2 + 4;
+	int from_x = hx, from_y = hy;
+	duel_centre(&from_x, &from_y);
 #else
 	int x = clamp(vox_hero_x + CELL / 2 - VIEW_W / 2, CAM_X_MIN, CAM_X_MAX);
 	int y = clamp(vox_hero_y + CELL / 2 - VIEW_H / 2 - 4, CAM_Y_MIN, CAM_Y_MAX);
@@ -501,7 +581,8 @@ void game_death(void) {
 		int previous = advanced;
 #endif
 		while(advanced < t) {
-			if(++advanced == BURST) {
+			if(++advanced == BURST - 4) vox_hero_hit_flash(1);
+			if(advanced == BURST) {
 #ifdef PERSP
 				persp_hero_shatter();
 #else
@@ -515,12 +596,13 @@ void game_death(void) {
 #ifdef PERSP
 		int push = clamp(t, 0, PUSH);
 		int retreat = clamp(t - RETREAT, 0, END - RETREAT);
-		/* At -137, the camera distance is 86 voxels versus the normal
-		 * 128, putting the hero about 50 percent larger in the frame. */
-		int pull = start_pull + (-137 - start_pull) * push / PUSH
-		         + 393 * retreat * retreat / ((END - RETREAT) * (END - RETREAT));
+		/* At its closest, the hero is about 50 percent larger than in
+		 * the normal gameplay view. */
+		int pull = start_pull + (closest - start_pull) * push / PUSH
+		         + (256 - closest) * retreat * retreat / ((END - RETREAT) * (END - RETREAT));
 		int flat = start_flat * (PUSH - push) / PUSH;
-		int x = hx + ((fx - hx) * flat >> 8), y = hy + ((fy - hy) * flat >> 8);
+		int x = hx + ((fx - hx) * flat >> 8) + (from_x - hx) * (PUSH - push) / PUSH;
+		int y = hy + ((fy - hy) * flat >> 8) + (from_y - hy) * (PUSH - push) / PUSH;
 		if(advanced != previous) persp_creatures(0);
 		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, persp_yaw, pull, flat, cam_res);
 #else
@@ -622,7 +704,7 @@ static void enter_dungeon(void) {
 		} else if(t > pull_at) {
 			int p = (t - pull_at) * 256 / PULL_BACK;
 			int eased = ((p * p >> 8) * (768 - 2 * p)) >> 8;
-			pull = CLOSEST * (256 - eased) / 256;
+			pull = CLOSEST + (NORMAL_PULL - CLOSEST) * eased / 256;
 		}
 		if(buried != last_buried) {
 			persp_creatures(buried);

@@ -57,15 +57,20 @@ ticks = []
 for r in rows[args.start + 90:]:
     if len(r) < 4 or not r[2]:
         continue
-    ticks.append(int(r[2], 16))
+    tick = int(r[2], 16)
+    if tick:
+        ticks.append(tick)
     lv = int(r[3], 16)
     if lv != last:
         level.append((int(r[0]), lv))
         last = lv
 print("level by frame:", " ".join(f"{f}:L{lv}" for f, lv in level))
 ts = sorted(ticks)
-print(f"frames {len(ts)}  median {ts[len(ts) // 2]}  p95 {ts[len(ts) * 95 // 100]}  "
-      f"max {ts[-1]}  over 2500 ticks: {sum(t > 2500 for t in ts)}")
+if ts:
+    print(f"render samples {len(ts)}  median {ts[len(ts) // 2]}  p95 {ts[len(ts) * 95 // 100]}  "
+          f"max {ts[-1]}  over 2500 ticks: {sum(t > 2500 for t in ts)}")
+else:
+    print("no render samples")
 slow = [(int(r[0]), int(r[2], 16)) for r in rows[args.start + 90:]
         if len(r) > 2 and r[2] and int(r[2], 16) > 2500]
 if slow:

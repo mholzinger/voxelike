@@ -62,7 +62,6 @@ static struct {
     sh2z_fx_t s, c;
     int32_t focal, horizon;
     int32_t eye_h, t_near, t_far;
-    int32_t t_focus;       /* depth of the ground on the row a focus ray starts from */
     int res;               /* PERSP_RES_x: how finely the picture is drawn */
     int cols, rows;
 } job;
@@ -151,11 +150,32 @@ static unsigned run_at(int cx, int cy) {
     return cells[cy][cx].flat ? 0 : cells[cy][cx].light;
 }
 
-void persp_sync(void) {
-    n_bumped = 0;
-    for (int cy = 0; cy < MAP_H; cy++) {
-        for (int cx = 0; cx < MAP_W; cx++) terrain(cx, cy);
+/* Refresh the empty runs only when a cell changes between empty and
+ * occupied. Light, height, items and creatures leave those runs valid. */
+void persp_sync(int terrain_changed) {
+    static int runs_ready;
+    int rebuild_runs = !runs_ready;
+    if (terrain_changed || rebuild_runs) {
+        n_bumped = 0;
+        for (int cy = 0; cy < MAP_H; cy++) {
+            for (int cx = 0; cx < MAP_W; cx++) {
+                pcell_t *pc = &cells[cy][cx];
+                unsigned tile = vox_tile[cy][cx];
+                unsigned lift = vox_lift[cy][cx];
+                unsigned light = vox_light[cy][cx];
+                if (pc->m == &vox_models[tile] && pc->lift == lift &&
+                    (!pc->flat || pc->light == light)) continue;
+                int was_empty = pc->flat == 0;
+                terrain(cx, cy);
+                if (was_empty != (pc->flat == 0)) rebuild_runs = 1;
+            }
+        }
     }
+    if (!rebuild_runs) {
+        persp_creatures(0);
+        return;
+    }
+    runs_ready = 1;
 
     /* Distance, in cells and counting diagonals as one, from each empty
      * cell to the nearest that is not: two sweeps. The map's edge counts
@@ -301,28 +321,7 @@ void persp_creatures(int hero_buried) {
 /* WIDE and YS are constants where this is used, so each resolution gets a
  * copy of its own with nothing left to decide per pixel: WIDE for columns
  * two pixels wide, YS 1 for rows one scanline tall. */
-/* The focus window: the middle of the screen, where the hero and what is
- * next to him always are, drawn fine while the rest is drawn coarse. In
- * scanlines and screen pixels. A fine ray for it starts FOCUS_RUNUP rows
- * below, so that whatever stands that near and reaches up into the window
- * is in place before the first row that shows. */
-#define FOCUS_X0     128
-#define FOCUS_X1     192
-#define FOCUS_Y0     56
-#define FOCUS_Y1     150
-#define FOCUS_RUNUP  32
-#define FOCUS_START  (FOCUS_Y1 + FOCUS_RUNUP)
-
-/* How a ray's pixels reach the framebuffer, all constants where used:
- *   WIDE    a pixel is two screen pixels wide, written as one word
- *   YS      1 when a row is one scanline, 0 when it is two
- *   TWICE   a row is two rows of the framebuffer, and the first is written.
- *           The line table shows it twice, except in the rows the focus
- *           window is on, where columns() copies it to the second
- *   FOCUS   a fine ray for the focus window: it starts FOCUS_RUNUP rows
- *           below the window and stops at the window's top
- * Nothing is clipped. What a focus ray draws below the window, and what a
- * coarse one draws in it, columns() sees to. */
+/* WIDE writes two screen pixels. YS selects one row per scanline. */
 
 /* Draw the rows from ybuf up to `top`, which is above it, and leave ybuf
  * there. The statements work one pixel out into `p`. */
@@ -334,7 +333,7 @@ void persp_creatures(int hero_buried) {
             __VA_ARGS__;                                                     \
             if (WIDE) *(pair_t *)dst = p;                                    \
             else *dst = (uint8_t)p;                                          \
-            dst -= TWICE ? 2 * STRIDE : STRIDE;                              \
+            dst -= STRIDE;                              \
         } while (--rows);                                                    \
     } while (0)
 
@@ -369,10 +368,10 @@ typedef int walk_fn(walk_t *w);
  * dozens (a creature, a door, the stairs). Apart, it is only in the cache
  * when it is in use. */
 static inline __attribute__((always_inline))
-int walk(walk_t *w, const int WIDE, const int YS, const int TWICE, const int FOCUS) {
+int walk(walk_t *w, const int WIDE, const int YS) {
     const int32_t EYE_H = job.eye_h, T_NEAR = job.t_near;
     const int32_t HORIZON = job.horizon << YS;
-    const int YEND = FOCUS ? FOCUS_Y0 : 0;
+    const int YEND = 0;
     const pcell_t *pc = &cells[w->cy][w->cx];
     const vmodel_t *m = pc->m;
     const unsigned st = pc->light, plinth = pc->plinth;
@@ -455,34 +454,32 @@ int walk(walk_t *w, const int WIDE, const int YS, const int TWICE, const int FOC
 static inline __attribute__((always_inline))
 void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
          int32_t tdx, int32_t tdy, const int WIDE, const int YS,
-         const int TWICE, const int FOCUS, walk_fn *const WALK) {
+         walk_fn *const WALK) {
     walk_t w;
     w.dx = dx; w.dy = dy; w.tdx = tdx; w.tdy = tdy; w.ex = ex; w.ey = ey;
     const int32_t EYE_H = job.eye_h, T_NEAR = job.t_near, T_FAR = job.t_far;
     const int32_t HORIZON = job.horizon << YS;
-    /* A focus ray draws rows YEND up to FOCUS_START and starts as deep as
-     * the ground is on the row it starts from; any other draws them all. */
-    const int YEND = FOCUS ? FOCUS_Y0 : 0;
-    const int32_t T_BEGIN = FOCUS ? job.t_focus : T_NEAR;
+    const int YEND = 0;
+    const int start_row = VIEW_H << YS;
     int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
-    int32_t px = ex + (int32_t)(((int64_t)dx * T_BEGIN) >> 16);
-    int32_t py = ey + (int32_t)(((int64_t)dy * T_BEGIN) >> 16);
+    int32_t px = ex + (int32_t)(((int64_t)dx * T_NEAR) >> 16);
+    int32_t py = ey + (int32_t)(((int64_t)dy * T_NEAR) >> 16);
     int cx = px >> 19, cy = py >> 19;
 
     /* Depth at the next cell line on each axis, and between cell lines. */
     int32_t fx = px & 0x7FFFF, fy = py & 0x7FFFF;
     int32_t tcx = tdx >= NEVER ? NEVER
-        : T_BEGIN + (int32_t)(((int64_t)(dx < 0 ? fx : 0x80000 - fx) * tdx) >> 16);
+        : T_NEAR + (int32_t)(((int64_t)(dx < 0 ? fx : 0x80000 - fx) * tdx) >> 16);
     int32_t tcy = tdy >= NEVER ? NEVER
-        : T_BEGIN + (int32_t)(((int64_t)(dy < 0 ? fy : 0x80000 - fy) * tdy) >> 16);
+        : T_NEAR + (int32_t)(((int64_t)(dy < 0 ? fy : 0x80000 - fy) * tdy) >> 16);
     int32_t tdcx = tdx >= NEVER / 8 ? NEVER : tdx * 8;
     int32_t tdcy = tdy >= NEVER / 8 ? NEVER : tdy * 8;
 
     int32_t dx20 = dx << 4, dy20 = dy << 4;
     int64_t ex48 = (int64_t)ex << 16, ey48 = (int64_t)ey << 16;
 
-    int32_t t_in = T_BEGIN;
-    int ybuf = FOCUS ? FOCUS_START : VIEW_H << YS;   /* rows from here down are drawn */
+    int32_t t_in = T_NEAR;
+    int ybuf = start_row;   /* rows from here down are drawn */
     int prev_h = 0, x_side = 0;
 
     for (;;) {
@@ -513,6 +510,10 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                 lift = pc->lift;
                 plinth = pc->plinth;
             }
+        } else if ((cx < 0 && sx < 0) || (cx >= MAP_W && sx > 0) ||
+                   (cy < 0 && sy < 0) || (cy >= MAP_H && sy > 0)) {
+            /* This axis is moving away from the map. The rest is sky. */
+            break;
         }
 
         if (kind == 0) {
@@ -553,13 +554,6 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
             uint32_t s = INV(t_out);
             int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
             if (top < YEND) top = YEND;
-            /* A focus ray's run-up is drawn only to find what hides what;
-             * most of it is this, and this need not be drawn at all. */
-            if (FOCUS && ybuf > FOCUS_Y1 && top < ybuf) {
-                int to = top > FOCUS_Y1 ? top : FOCUS_Y1;
-                dst -= (ybuf - to) * STRIDE;
-                ybuf = to;
-            }
             if (top < ybuf) {
                 /* The ray is over the voxel at eye + direction * depth, and
                  * the depth on a row is row_t's for it times how far below
@@ -601,21 +595,19 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
 
 
 /* The walks go after all the rays, out of their way. */
-#define RAY(name, wide, ys, twice, focus)                                          \
-    __attribute__((section(".ramtext.walk"), noinline))                            \
-    static int name##_walk(walk_t *w) {                                            \
-        return walk(w, wide, ys, twice, focus);                                    \
-    }                                                                              \
-    __attribute__((section(".ramtext"), noinline))                                 \
+#define RAY(name, wide, ys)                                                    \
+    __attribute__((section(".ramtext.walk"), noinline))                        \
+    static int name##_walk(walk_t *w) {                                        \
+        return walk(w, wide, ys);                                              \
+    }                                                                         \
+    __attribute__((section(".ramtext"), noinline))                             \
     static void name(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy, \
-                     int32_t tdx, int32_t tdy) {                                   \
-        ray(dst, ex, ey, dx, dy, tdx, tdy, wide, ys, twice, focus, name##_walk);   \
+                     int32_t tdx, int32_t tdy) {                               \
+        ray(dst, ex, ey, dx, dy, tdx, tdy, wide, ys, name##_walk);              \
     }
-RAY(ray_coarse, 1, 0, 0, 0)
-RAY(ray_wide, 0, 0, 0, 0)
-RAY(ray_fine, 0, 1, 0, 0)
-RAY(ray_around, 1, 0, 1, 0)                /* coarse, in focus mode */
-RAY(ray_focus, 0, 1, 0, 1)                 /* fine, in the focus window */
+RAY(ray_coarse, 1, 0)
+RAY(ray_wide, 0, 0)
+RAY(ray_fine, 0, 1)
 
 #define SECONDARY_GO  1
 
@@ -637,11 +629,14 @@ static inline __attribute__((always_inline)) int32_t recip(int32_t a) {
 
 /* How far to the side of straight ahead each column looks, as a slope:
  * lens() works these out, since only the lens changes them. */
-static int32_t slope_t[3 * VIEW_W];
+static int32_t slope_t[2 * VIEW_W];
 
 static void slopes(int32_t *t, int cols, int32_t focal) {
-    for (int col = 0; col < cols; col++) {
-        t[col] = ((2 * col - (cols - 1)) << 16) / (2 * focal * (cols / VIEW_W));
+    int32_t divisor = 2 * focal * (cols / VIEW_W);
+    for (int col = 0; col < cols / 2; col++) {
+        int32_t slope = ((cols - 1 - 2 * col) << 16) / divisor;
+        t[col] = -slope;
+        t[cols - 1 - col] = slope;
     }
 }
 
@@ -687,37 +682,7 @@ static void columns(int first) {
             cast(ray_fine, pixels + (2 * VIEW_H - 1) * STRIDE + col, col);
         }
         break;
-    default:
-        /* Coarse columns first, each two framebuffer rows to a row, with
-         * the two scanlines of a row made two rows of the framebuffer where
-         * the focus window's rows are. Then the window: two fine columns
-         * over each coarse one, looking where columns 2 * col and
-         * 2 * col + 1 of 320 would. Each kind of ray is its own code, and
-         * the cache holds about one of them, so all of one are sent before
-         * any of the other. Here a CPU's share is every other pair of
-         * columns: a pair is one long word, which halves the copying. */
-        for (int col = 2 * first; col < VIEW_W; col += 4) {
-            cast(ray_around, pixels + (2 * VIEW_H - 2) * STRIDE + col * 2, col);
-            cast(ray_around, pixels + (2 * VIEW_H - 2) * STRIDE + col * 2 + 2, col + 1);
-            if (col >= FOCUS_X0 / 2 && col < FOCUS_X1 / 2) continue;
-            uint8_t *at = pixels + FOCUS_Y0 * STRIDE + col * 2;
-            for (int n = (FOCUS_Y1 - FOCUS_Y0) / 2; n; n--) {
-                *(quad_t *)(at + STRIDE) = *(quad_t *)at;
-                at += 2 * STRIDE;
-            }
-        }
-        for (int col = FOCUS_X0 / 2 + 2 * first; col < FOCUS_X1 / 2; col += 4) {
-            /* A fine ray draws some of its run-up, over what is below the
-             * window. That is kept, and put back. */
-            uint32_t kept[FOCUS_RUNUP / 2];
-            uint8_t *below = pixels + FOCUS_Y1 * STRIDE + col * 2;
-            for (int k = 0; k < FOCUS_RUNUP / 2; k++) kept[k] = *(quad_t *)(below + 2 * k * STRIDE);
-            for (int fine = 2 * col; fine < 2 * col + 4; fine++) {
-                cast(ray_focus, pixels + (FOCUS_START - 1) * STRIDE + fine, VIEW_W + fine);
-            }
-            for (int k = 0; k < FOCUS_RUNUP / 2; k++) *(quad_t *)(below + 2 * k * STRIDE) = kept[k];
-        }
-        break;
+
     }
 }
 
@@ -748,9 +713,6 @@ static void pieces(void) {
         int col = job.cols / 2 + (((u >> 8) * scale) >> (20 - fine_x));
         int row = (job.horizon << fine_y) + (((job.eye_h * 16 - pz) * scale) >> (16 - fine_y));
         if ((unsigned)col >= (unsigned)job.cols || (unsigned)row >= (unsigned)job.rows) continue;
-        /* Outside the focus window's rows only even framebuffer rows show. */
-        if (job.res == PERSP_RES_FOCUS && (row < FOCUS_Y0 || row >= FOCUS_Y1)) row &= ~1;
-
         int x = fine_x ? col & ~1 : col * 2;
         uint8_t *at = (uint8_t *)(job.fb + FB_PIXELS) + row * STRIDE + x;
         if (piece == 2) {
@@ -781,43 +743,63 @@ static void lens(int flat, int pull, int res) {
     had_pull = pull;
     had_res = res;
 
-    /* The picture's size in framebuffer pixels and rows. */
-    job.res = res;
-    job.cols = res == PERSP_RES_COARSE ? VIEW_W : 2 * VIEW_W;
-    job.rows = (res == PERSP_RES_FINE || res == PERSP_RES_FOCUS) ? 2 * VIEW_H : VIEW_H;
-
     int i = flat >> 4, f = flat & 15;
     int32_t focal = focal_step[i] + (i < 16 ? (focal_step[i + 1] - focal_step[i]) * f / 16 : 0);
     int32_t eye = focal + ((focal * PULL_BACK * pull) >> 16);
     int32_t horizon = TARGET_ROW - focal;      /* in coarse rows; a fine ray doubles it */
-
-    /* The ground reaches the bottom row at t_near and the top row at t_far. */
+    int projection_changed = focal != job.focal;
+    int depth_changed = projection_changed || eye != job.eye_h;
+    int resolution_changed = res != job.res;
+    job.res = res;
+    job.cols = res == PERSP_RES_COARSE ? VIEW_W : 2 * VIEW_W;
+    job.rows = res == PERSP_RES_FINE ? 2 * VIEW_H : VIEW_H;
     job.focal = focal;
     job.horizon = horizon;
     job.eye_h = eye;
-    job.t_near = (int32_t)((((uint64_t)eye * focal) << 16) / (uint32_t)(VIEW_H - horizon));
-    job.t_far = (int32_t)((((uint64_t)eye * focal) << 16) / (uint32_t)(0 - horizon));
-    job.t_focus = (int32_t)((((uint64_t)eye * focal) << 17) / (uint32_t)(FOCUS_START - 2 * horizon));
-    if (job.t_far - job.t_near > (int32_t)((INV_N - 2) << INV_STEP)) {
-        job.t_far = job.t_near + (int32_t)((INV_N - 2) << INV_STEP);   /* as far as the tables go */
-    }
 
-    for (int n = 0; n < INV_N; n++) {
-        uint32_t t = (uint32_t)job.t_near + ((uint32_t)n << INV_STEP);
-        inv_t[n] = ((uint32_t)focal << 19) / (t >> 13);
-        rise_t[n] = t / (uint32_t)focal;
+    if (depth_changed) {
+        /* Only depths between the first and last possible ray sample can
+         * index these tables. Pulling closer shrinks that interval. */
+        uint64_t eye_focal = (uint64_t)eye * focal;
+        job.t_near = (int32_t)((eye_focal << 16) / (uint32_t)(VIEW_H - horizon));
+        job.t_far = (int32_t)((eye_focal << 16) / (uint32_t)(0 - horizon));
+        if (job.t_far - job.t_near > (int32_t)((INV_N - 2) << INV_STEP)) {
+            job.t_far = job.t_near + (int32_t)((INV_N - 2) << INV_STEP);
+        }
+
+        unsigned last = (uint32_t)(job.t_far - job.t_near) >> INV_STEP;
+        const uint32_t step = 1u << INV_STEP;
+        const uint32_t divisor = (uint32_t)focal;
+        uint32_t rise = (uint32_t)job.t_near / divisor;
+        uint32_t remainder = (uint32_t)job.t_near - rise * divisor;
+        uint32_t rise_step = step / divisor;
+        uint32_t remainder_step = step - rise_step * divisor;
+        uint32_t depth = (uint32_t)job.t_near >> 13;
+        uint32_t numerator = divisor << 19;
+        for (unsigned n = 0; n <= last; n++) {
+            inv_t[n] = numerator / depth;
+            rise_t[n] = rise;
+            depth += step >> 13;
+
+            /* Carry the remainder so this is exactly floor(t / focal)
+             * without a second division for every depth sample. */
+            rise += rise_step;
+            remainder += remainder_step;
+            if (remainder >= divisor) {
+                rise++;
+                remainder -= divisor;
+            }
+        }
     }
-    /* The focus view is coarse but for its window, and keeps the fine
-     * columns' slopes for that after its own. */
-    if (res == PERSP_RES_FOCUS) {
-        slopes(slope_t, VIEW_W, focal);
-        slopes(slope_t + VIEW_W, 2 * VIEW_W, focal);
-    } else {
+    /* A dolly changes the eye distance only. Rays per column and the
+     * scanline projection stay fixed unless the focal length changes. */
+    if (projection_changed || resolution_changed) {
         slopes(slope_t, job.cols, focal);
     }
-    /* By scanline; a coarse ray reads every other entry. */
-    for (int y = 0; y < 2 * VIEW_H; y++) {
-        row_t[y] = (uint32_t)((((uint64_t)focal) << 31) / (uint32_t)(y - 2 * horizon));
+    if (projection_changed) {
+        for (int y = 0; y < 2 * VIEW_H; y++) {
+            row_t[y] = (uint32_t)((((uint64_t)focal) << 31) / (uint32_t)(y - 2 * horizon));
+        }
     }
 }
 
@@ -836,19 +818,16 @@ void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, 
     while (MARS_SYS_COMM6 == SECONDARY_GO);
     pieces();
 
-    if (job.res == PERSP_RES_FOCUS) {
-        /* A framebuffer row to a scanline where the focus window is, and
-         * one to two scanlines above and below it. */
-        for (int k = 0; k < 2 * VIEW_H; k++) {
-            int row = (k >= FOCUS_Y0 && k < FOCUS_Y1) ? k : k & ~1;
-            fb[k] = (uint16_t)(FB_PIXELS + row * (STRIDE / 2));
-        }
-    } else if (job.rows > VIEW_H) {
-        for (int k = 0; k < job.rows; k++) fb[k] = (uint16_t)(FB_PIXELS + k * (STRIDE / 2));
-    } else {
-        for (int k = 0; k < VIEW_H; k++) {
-            fb[2 * k] = fb[2 * k + 1] = (uint16_t)(FB_PIXELS + k * (STRIDE / 2));
-        }
+    /* Two line offsets per aligned longword. The 112-row modes map
+     * consecutive scanlines to the same source row. */
+    quad_t *lines = (quad_t *)fb;
+    unsigned stride = STRIDE / 2;
+    uint32_t offsets = FB_PIXELS * 0x00010001u;
+    if (job.rows > VIEW_H) {
+        offsets += stride;
+        stride *= 2;
     }
+    uint32_t advance = stride * 0x00010001u;
+    for (int k = 0; k < VIEW_H; k++, offsets += advance) lines[k] = offsets;
 }
 #endif

@@ -10,7 +10,6 @@ enum {
     PERSP_RES_COARSE,      /* 160x112: every pixel worked out stands for 2x2 */
     PERSP_RES_WIDE,        /* 320x112: for 1x2 */
     PERSP_RES_FINE,        /* 320x224: for itself */
-    PERSP_RES_FOCUS,       /* fine around the hero, coarse everywhere else */
     PERSP_RES_COUNT
 };
 
@@ -19,7 +18,7 @@ enum {
 void persp_init(void);
 
 /* The world changed (a screen was loaded): take it in again. */
-void persp_sync(void);
+void persp_sync(int terrain_changed);
 
 /* Height of the equipped hero model in voxel layers. */
 int persp_hero_height(void);
@@ -35,7 +34,8 @@ extern int camera_yaw_settled;
 
 /* Draw a whole frame into framebuffer fb. (x, y) is the voxel the camera
  * circles, yaw the direction it looks in sh2zam turns (0xC000 is north),
- * pull how far it stands back: -200 for the intro dive, 0 normal, 256 all the way out. flat takes
+ * pull sets the eye distance: -200 for the intro dive, -54 in gameplay,
+ * 256 all the way out. flat takes
  * the perspective out: 0 is all of it, and at 256, looking north, the
  * picture is the fixed view's. res is one of PERSP_RES_x. */
 void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, int res);

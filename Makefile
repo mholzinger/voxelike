@@ -66,8 +66,8 @@ RGFLAGS = -m2 -mb -O2 -fomit-frame-pointer -ffreestanding -Iport/include -Irogue
 # differs.
 #   make            the game: the 3D camera, with the flat view inside it
 #   make FLAT=1     the flat view alone, with no 3D renderer (sh_src/persp.c)
-#   make RES=n      start in resolution n: 0 160x112, 1 320x112, 2 320x224, 3 focus
-#                   (focus if not given)
+#   make RES=n      start in resolution n: 0 160x112, 1 320x112, 2 320x224
+#                   (320x112 if not given)
 #   make STATS=1    show frames a second and the time to draw one
 #   make PERSP=2    turn the camera by itself, for measuring
 #   make BOT=1      a ROM that plays itself, for tools/botrun.py
@@ -100,6 +100,11 @@ SHCCFLAGS += -DBOT
 endif
 ifneq ($(PERSP),)
 SHCCFLAGS += -DPERSP=$(PERSP) $(if $(RES),-DPERSP_RES=$(RES)) $(if $(STATS),-DSTATS)
+endif
+ifneq ($(RES),)
+ifeq ($(filter $(RES),0 1 2),)
+$(error RES must be 0 (160x112), 1 (320x112), or 2 (320x224))
+endif
 endif
 .DEFAULT_GOAL := all
 BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)
@@ -214,7 +219,7 @@ $(TARGET).elf: $(SHOBJS) Makefile | $(ROMDIR)
 	$(SHCC) $(SHLDFLAGS) $(SHOBJS) -o $@ $(SHLIBS)
 
 # Materials and creature sprites, baked from the art in models/
-sh_src/baked.h: models/materials.txt models/creatures.txt tools/bake_models.py
+sh_src/baked.h: models/materials.txt models/creatures.txt models/terrain.txt tools/bake_models.py
 	@echo "BAKE $@"
 	@python3 tools/bake_models.py --header $@
 

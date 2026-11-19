@@ -5,8 +5,8 @@ usage: tools/frametimes.py [--frames N] [--input keys.csv] [--from F]
 
 Reads game_render_ticks (FRT ticks, 5.56 us each) once per emulated frame.
 A 60 fps frame has about 3000 ticks in total. These are emulator numbers:
-good for comparing one build with another, not for promising a frame rate
-on hardware.
+use them to compare builds. A zero tick sample means the renderer reused
+its visible frame. Check a MiSTer to measure hardware frame rates.
 """
 import argparse, csv, os, subprocess, sys, tempfile
 
@@ -39,11 +39,15 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     rows = list(csv.reader(open(log)))[1:]
 
-ticks = [int(r[2], 16) for r in rows[args.start:] if len(r) > 2 and r[2]]
-if not ticks:
+samples = [int(r[2], 16) for r in rows[args.start:] if len(r) > 2 and r[2]]
+if not samples:
     sys.exit("no frames logged")
+ticks = [value for value in samples if value]
+if not ticks:
+    print(f"all {len(samples)} samples reused the visible frame")
+    sys.exit(0)
 ticks_sorted = sorted(ticks)
 over = sum(1 for t in ticks if t > 2500)
-print(f"frames {len(ticks)}  median {ticks_sorted[len(ticks) // 2]}  "
+print(f"render samples {len(ticks)}  reused {len(samples) - len(ticks)}  median {ticks_sorted[len(ticks) // 2]}  "
       f"p95 {ticks_sorted[len(ticks) * 95 // 100]}  max {ticks_sorted[-1]}  "
       f"over 2500 ticks: {over}")

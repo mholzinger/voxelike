@@ -24,7 +24,7 @@ make STATS=1    # show frames a second and the time to draw one
 make BENCH=7    # the same 256 frames every run, for timing (tools/mbench.sh)
 make VERSION=0.1.0-alpha.1   # the name on the title screen; without it, dev- and the commit
 make ARMOR=7 WEAPON=5   # dress the hero for looking at the art (Rogue's numbers)
-make RES=0      # start in a resolution: 0 160x112, 1 320x112, 2 320x224, 3 focus (the default)
+make RES=0      # start in 160x112. RES=1 is 320x112 (default), RES=2 is 320x224
 make shot       # build, run headless in ares, write shots/latest.png
 make shot FRAMES=320 INPUT=keys.csv
 make deploy     # scp to a MiSTer (MISTER=root@host)
@@ -152,7 +152,7 @@ so a held direction keeps its meaning through a swing.
 | Y, tapped twice | swing back to north |
 | Y, held | tip the view over into the flat one, or back out of it |
 | MODE, held | pull back to show more, until it is let go |
-| MODE, tapped | next resolution: 160x112, 320x112, 320x224, focus |
+| MODE, tapped | next resolution: 160x112, 320x112, 320x224 |
 
 The resolutions are there to be compared by playing. A voxel at the hero
 covers the same 2x2 screen pixels in all three; what changes is how many
@@ -161,17 +161,14 @@ ran at 30, 20 and 15 frames a second. Each has its own compiled copy of the
 ray routine, so nothing is decided per pixel. Black is written as CRAM
 index 1, not 0: the 32X drops a zero written to the framebuffer as a byte.
 
-Focus draws the middle of the screen fine and the rest coarse. The hero is
-always at the middle, so a fixed window 64 pixels by 94 scanlines holds him
-and the tiles next to him whichever way the camera looks. Coarse columns
-are drawn right across the screen, and then two fine rays per column draw
-the window over them; a fine ray starts 32 rows below the window, so that
-whatever stands that near and reaches up into the window is in place by the
-first row that shows. Floor down there is stepped over, and whatever else
-it draws there is put back afterwards. Over two bot-played levels in ares a frame
-took 5671 ticks at the median and 7681 at worst, between 30 and 20 frames
-a second. The game starts in it; `make RES=0` starts in 160x112 (RES is
-0 to 3).
+The game starts at 320×112. It works out all 320 columns and repeats each
+row on two scanlines. Use `make RES=0` for 160×112 or `make RES=2` for native
+320×224.
+
+Floor tiles and wall caps use 8×8 material maps in `models/terrain.txt`.
+The maps adapt Kenney textures to the dungeon palette and run through
+the same asset baker as the creature models. Both renderers
+draw the same terrain geometry and textures.
 
 The flat view is the fixed renderer itself, at its 60 frames a second.
 Getting there is one continuous move: the focal length grows from 128 to
@@ -189,13 +186,18 @@ not jump. Turning the camera from the flat view tips it back out first.
   has not seen what the primary wrote to the world.
 - The camera basis comes from SH2ZAM (`third_party/SH2ZAM`, MIT, a vendored
   subset). Each ray's two reciprocals come from the SH-2's own divider, and
-  the columns' slopes from a table made when the lens changes.
+  the columns' slopes from a table made when the focal length or resolution
+  changes. Zooming by moving the eye reuses the slopes and scanline
+  projection, and rebuilds depth entries only across the range rays can hit.
+- Normal builds keep the picture on screen when the camera, terrain,
+  creatures and particles are still. STATS and BENCH builds continue
+  drawing frames for timing.
 - Each cell's facts sit in one 16 byte record, a cache line, and a floor's
   colours in 64 bytes.
 - Measured on a MiSTer with `tools/mbench.sh` (a fixed dungeon, the camera
   going once round it, 256 frames): a frame takes 4298 FRT ticks on average
   and 4894 at worst at 160x112, inside the 6000 that 30 frames a second
-  allows. Focus mode takes 7341 and 8027, inside the 9000 that 20 allow.
+  allows.
 - What was learned getting there, each step timed on the MiSTer:
   - It started at 6105. ares said 3307 for the same frames, so ares is for
     checking pictures and counting instructions, not for frame rates.
@@ -214,13 +216,6 @@ not jump. Turning the camera from the flat view tips it back out first.
     are no help set around a whole frame's rays. With data kept out the
     frame took 13653 where it takes 4765; with code kept out it did not
     finish in the time allowed.
-  - Focus mode is where the 4K cache does matter, because it has more
-    than one ray routine. Sending all the rays of one kind before any of
-    the next gained 6 percent. Cutting runs of rows where the clipping
-    changed, to ask nothing per pixel, made the routines bigger and the
-    frame 7 percent slower though ares counted fewer cycles; drawing
-    without clipping and tidying up after (a copy, and 16 words kept and
-    put back) made them small again and the frame went from 8224 to 7750.
   - The compiler's pixel loops had waste in them (a colour looked up
     twice, constants loaded every pixel) that went away when the loop was
     written as a run with the pixel in a variable: 4766 to 4529 at
@@ -229,12 +224,6 @@ not jump. Turning the camera from the flat view tips it back out first.
     number right by calling a routine, and that routine is in ROM. Two
     table lookups a cell did it. Shifting an unsigned number there, which
     is done in line, gained 4 to 5 percent.
-  - In focus mode the copy to the second row of the window's band cost 5
-    percent and the run-up of the fine rays 5 more. Giving each CPU
-    columns in pairs, so a copy is a long word, and not drawing floor in
-    the run-up got 2 of that back.
-  - A smaller window is not a way to 30 frames a second in focus: 48 by
-    76 still took 6774.
   - `ares-headless --profile` and `tools/profile.py` found it. Measure
     first.
 - Creatures are real voxel models here: `tools/bake_models.py --solid` turns
@@ -262,8 +251,9 @@ own data, with no change to Rogue's source:
 - A monster that strikes at the hero jabs back a moment later. The linker's
   `--wrap=attack` routes Rogue's one call to `attack()` through
   `port/rogue_port.c`, which notes who struck.
-- Anything that lost hit points since the last turn flashes: monsters white,
-  the hero red.
+- Whoever takes a hit flashes white. In 3D, the first hit between
+  adjacent fighters brings the camera to finishing-shot distance and
+  frames both fighters. It eases back when they separate.
 - A monster that is gone from Rogue's monster list died, and its sprite is
   thrown apart as loose voxels that fall, lie a moment and vanish. In 3D,
   nearby defeats get a short shot that frames both fighters, moves closer,
@@ -365,7 +355,7 @@ for no and B to back out.
   run draws the same 256 frames), starts it there, and brings back a
   screenshot with the mean and worst frame on it. The same ROM twice gives
   the same number to within a tick or two. `tools/mbench.sh out.png RES=0`
-  times another resolution; without RES it is focus, as the game starts.
+  times another resolution. Without RES it measures 320×112.
 - `tools/profile.py prof.csv` turns `ares-headless --profile prof.csv` into
   time by function; `tools/raysize.sh` lists the size of what runs from RAM.
 - Input scripts are `frame,button,value` lines. For a normal build, press Start at
@@ -382,6 +372,8 @@ elsewhere and keep their own terms.
   DeRosier, MIT.
 - Build flags, the `.ramtext` section, unsolicited pad publishing and the
   deploy probe are lessons carried over from 32x-builder.
+- The floor and wall-cap material maps adapt `floor_stone.png`
+  and `wall_brick_sand_center.png` from Kenney's Retro Textures Fantasy (CC0).
 - `md_src/font.s`: generated by `tools/gen_font.py` from font8x8_basic by
   Daniel Hepper, public domain (IBM VGA glyphs).
 - `third_party/SH2ZAM/`: fixed-point math by the SH2ZAM contributors, MIT,

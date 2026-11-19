@@ -1,0 +1,27 @@
+# 8×8 material maps adapted from Kenney Retro Textures Fantasy (CC0).
+# The originals are listed below. Each character paints one voxel top.
+# The floor border was consolidated onto two edges to align neighboring tiles.
+# Floor uses a=grout, A=stone, S=light stone.
+# Wall caps use t=sandstone and T=muted sand.
+
+# floor_stone.png
+= floor
+aaaaaaaa
+aAAAAASA
+aAAAAASA
+aAAASASA
+aAASSAAA
+aSAAAAAA
+aSAAASAA
+aAAAAAAA
+
+# wall_brick_sand_center.png
+= wall_cap
+tttttttt
+tttttTtt
+tttttttt
+tttttttt
+ttttttTt
+tttttTTt
+TtTttttt
+tttttttt
