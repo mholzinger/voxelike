@@ -27,6 +27,12 @@ void persp_hero_shatter(void);
 /* Restamp the creatures. hero_buried crops that many layers from the
  * hero's feet, raising the head out of the floor as it counts down to zero. */
 void persp_creatures(int hero_buried);
+void persp_stair_hop(int hero_buried, int offset, int hop);
+/* Negative hides the hero, zero places him on the floor. */
+void persp_arrival_hero(int altitude);
+
+/* Tint the existing floor surface during the hero’s death shot. */
+void persp_death_pool(int cx, int cy, unsigned age);
 
 /* Which way the camera looks, in sh2zam turns (0xC000 is north). */
 extern uint16_t persp_yaw;

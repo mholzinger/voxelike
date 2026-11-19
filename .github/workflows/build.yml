@@ -26,6 +26,11 @@ jobs:
       MARSDEV_VER: v1.0.0-rc1
       MARSDEV: ${{ github.workspace }}/.marsdev
       GH_TOKEN: ${{ github.token }}
+      # itch.io. Mapped here, not on the step, so the step's `if:` can read
+      # it and skip while the secret is not set. Add the key with:
+      #   gh secret set BUTLER_API_KEY   (from itch.io/user/settings/api-keys)
+      BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+      ITCH_TARGET: paisleyboxers/voxelike:32x
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,3 +94,19 @@ jobs:
           gh release create "v$V" "voxelike-$V.32x" LICENSE-rogue.txt LICENSE-voxelike.txt \
             --title "$V" --notes-file notes.md \
             --prerelease --target "$GITHUB_SHA"
+
+      # The same ROM and licences the GitHub release got, so the two
+      # downloads are the same bytes, under the same version.
+      - name: Publish to itch.io
+        if: steps.name.outputs.release == 'true' && env.BUTLER_API_KEY != ''
+        run: |
+          set -euo pipefail
+          V="${{ steps.name.outputs.version }}"
+          mkdir itch
+          cp "voxelike-$V.32x" LICENSE-rogue.txt LICENSE-voxelike.txt itch/
+          curl -fsSL -o /tmp/butler.zip \
+            https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -qq /tmp/butler.zip -d /tmp/butler-bin
+          chmod +x /tmp/butler-bin/butler
+          /tmp/butler-bin/butler push itch "$ITCH_TARGET" --userversion "$V"
+          /tmp/butler-bin/butler status "${ITCH_TARGET%%:*}"

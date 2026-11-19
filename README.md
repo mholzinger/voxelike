@@ -142,8 +142,9 @@ pauses the swing. The camera checks visibility again from the new tile
 before resuming. Manual camera turns hold off recovery for three seconds.
 
 Up on the D-pad is the map direction nearest to away from the camera.
-The mapping updates when the camera settles and the pad is released,
-so a held direction keeps its meaning through a swing.
+A new press uses the angle visible when it begins. A held direction
+keeps its meaning through a swing, and one quick tap can queue during
+a walking or attack animation.
 
 | Pad | Camera |
 |---|---|
@@ -247,23 +248,27 @@ not jump. Turning the camera from the flat view tips it back out first.
 Rogue reports a fight as text. The renderer shows it by watching the game's
 own data, with no change to Rogue's source:
 
-- The hero jabs at a monster he walks into.
+- A bump attack uses the wielded weapon’s own wind-up, contact and
+  follow-through. Heavy weapons lift or sweep, and daggers and spears
+  thrust.
 - A monster that strikes at the hero jabs back a moment later. The linker's
   `--wrap=attack` routes Rogue's one call to `attack()` through
   `port/rogue_port.c`, which notes who struck.
-- Whoever takes a hit flashes white. In 3D, the first hit between
-  adjacent fighters brings the camera to finishing-shot distance and
-  frames both fighters. It eases back when they separate.
+- Whoever takes a hit flashes white. In 3D, a neighboring enemy brings
+  the camera to finishing-shot distance and frames both fighters. It
+  eases back when they separate.
 - A monster that is gone from Rogue's monster list died, and its sprite is
   thrown apart as loose voxels that fall, lie a moment and vanish. In 3D,
   nearby defeats get a short shot that frames both fighters, moves closer,
-  then releases the opponent's voxels before returning to the gameplay view.
+  then shows a brief red spray and the opponent's breakup before returning
+  to gameplay. A small stain stays on the death tile for the current floor.
 
 ## Player death
 
 The camera pushes in to make the hero about 50 percent larger. The fatal
-blow breaks the equipped hero into chunks that keep their model colours,
-with a separate spray of red voxels. The camera
+blow sends out a spray of red voxels while the hero is still standing.
+A beat later, the equipped hero breaks into chunks that keep their model
+colours. The camera
 pulls back while the dungeon fades to black, then Rogue’s headstone shows
 the cause of death and gold. Press Start on the headstone to begin again.
 
@@ -308,24 +313,26 @@ The numbers are `STEP`, `IDLE_TURN`, `MORE_WAIT` and `MSG_HOLD` in
 
 When Rogue asks "which object?" a list of the pack opens. When it asks for a
 direction, use the D-pad. At a yes/no prompt A is yes.
+Item names in the controller lists omit Rogue's inventory letters. When a
+pickup offers a shortcut, A closes the notice and C uses the item shown.
 
 ## Text
 
 Text is drawn on the Mega Drive layer, 40 columns of an 8x8 font, in front of
 the 32X picture. `sh_src/rogue_plat.c` decides what Rogue is waiting for from
 where it left the cursor and what the message line says, then shows the
-matching screen. Rogue's 80 column message line wraps into a strip at the top,
+matching screen. Rogue's 80 column message line wraps into a framed dialogue box,
 and its stats feed a framed HUD with a health meter and pixel icons for
 depth, gold, strength, armor and experience. The health meter turns red
 at a quarter health. Controller lists scroll when the choices would
-otherwise overlap the status panel.
+otherwise overlap the status panel. Continuation prompts appear in the
+box footer with controller labels.
 
 When Rogue asks which object, the list offers only what fits the question:
 potions to quaff, scrolls to read, and for a scroll that identifies one kind
 of thing, that kind. Anything can be wielded or thrown, so those two list
 the whole pack. The port learns what Rogue wants by having the linker route
-`get_item` through it (`--wrap`), as it does `attack`; Rogue's source is not
-touched. Before this an identify scroll listed everything, refused all but
+`get_item` through it (`--wrap`), as it does `attack`. Before this an identify scroll listed everything, refused all but
 one line of it, and could not be backed out of.
 
 Questions a keyboard answers with one key are lists too. The table `asks`

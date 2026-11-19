@@ -13,6 +13,8 @@
 extern void game_frame(void);
 extern void game_blank(void);
 extern void game_death(void);
+extern void game_stairs_depart(void);
+extern void game_stairs_arrive(void);
 
 int plat_screen_changed = 1;
 
@@ -31,6 +33,7 @@ int plat_step_frames = STEP;
 /* Timings in vblanks. A fresh direction waits SETTLE before it is read, so
  * the two halves of a diagonal that land a frame apart count as one press. */
 #define SETTLE        3
+#define WALK_SETTLE   1
 #define REPEAT_FIRST  16
 #define REPEAT_NEXT   6
 #ifdef BOT
@@ -46,9 +49,7 @@ int plat_step_frames = STEP;
 #define HUD_X         1
 #define HUD_W         (TEXT_W - 2)
 #define MSG_ROW       1
-#define LIST_ROW      5
 #define STATUS_ROW    25
-#define LIST_ROWS     (STATUS_ROW - LIST_ROW - 2)
 
 unsigned long plat_ticks(void) {
 #ifdef BENCH
@@ -62,22 +63,60 @@ unsigned long plat_ticks(void) {
 typedef struct {
 	uint16_t pressed;   /* buttons that went down this step */
 	uint16_t dir;       /* direction that fired this step, with auto-repeat */
-	uint16_t held;      /* direction held steady for SETTLE, for walking */
+	uint16_t held;      /* settled movement direction, mapped to the dungeon */
+	uint16_t tap;       /* one new movement press, mapped when it was sampled */
 } input_t;
 
 static uint16_t prev_pad = 0xFFFF;   /* nothing counts as newly pressed at first */
 
 #ifdef PERSP
-static void pad_turn_latch(uint16_t dir);
+static void pad_turn_latch(void);
+static uint16_t camera_dir(uint16_t dir);
 #else
-#define pad_turn_latch(dir) ((void)0)
+#define pad_turn_latch() ((void)0)
+#define camera_dir(dir) (dir)
 #endif
 
-static input_t poll(void (*frame)(void)) {
-	static uint32_t dir_due, last_fire, held_since;
-	static uint16_t last_dir, last_held;
-	input_t in = { 0, 0, 0 };
+/* Observe movement on both sides of the render. Preserve a tap sampled
+ * only once, and freeze a held direction's mapping for the whole press. */
+static int dir_key(uint16_t dir);
 
+static void sample_walk(input_t *in, uint16_t dir, uint32_t now) {
+	static uint16_t previous;
+	static uint32_t since;
+	static int fired;
+
+	if(dir != previous) {
+		if(!dir && previous && !fired && dir_key(camera_dir(previous)))
+			in->tap = camera_dir(previous);
+#ifdef PERSP
+		if((!previous && dir) || (!dir && camera_yaw_settled)) pad_turn_latch();
+#endif
+		previous = dir;
+		since = now;
+		fired = 0;
+	} else if(!dir) {
+#ifdef PERSP
+		if(camera_yaw_settled) pad_turn_latch();
+#endif
+	}
+	in->held = 0;
+	if(dir && now - since >= WALK_SETTLE) {
+		uint16_t mapped = camera_dir(dir);
+		if(!fired && dir_key(mapped)) {
+			in->tap = mapped;
+			fired = 1;
+		}
+		in->held = mapped;
+	}
+}
+
+static input_t poll(void (*frame)(void)) {
+	static uint32_t dir_due, last_fire;
+	static uint16_t last_dir;
+	input_t in = { 0 };
+
+	sample_walk(&in, MARS_SYS_COMM8 & DIR_MASK, MARS_SYS_COMM12);
 	frame();
 
 	uint32_t now = MARS_SYS_COMM12;
@@ -85,13 +124,7 @@ static input_t poll(void (*frame)(void)) {
 	uint16_t dir = pad & DIR_MASK;
 	in.pressed = pad & ~prev_pad;
 	prev_pad = pad;
-	pad_turn_latch(dir);
-
-	if(dir != last_held) {
-		last_held = dir;
-		held_since = now;
-	}
-	if(now - held_since >= SETTLE) in.held = dir;
+	sample_walk(&in, dir, now);
 
 	if(in.pressed & DIR_MASK) dir_due = now + SETTLE;
 	if(dir && (int32_t)(now - dir_due) >= 0) {
@@ -115,13 +148,12 @@ static void wait_any(void (*frame)(void), int frames) {
 }
 
 #ifdef PERSP
-/* Up maps to the nearest cardinal direction. Change the mapping only
- * with the pad released and the camera settled. Keep the previous
- * direction at an exact diagonal if it is one of the two nearest. */
+/* Up maps to the nearest cardinal direction. At a new press, use the
+ * visible angle even if the press interrupted an automatic swing. Keep
+ * the previous direction at a tie and throughout a held press. */
 static unsigned pad_turn;   /* in eighths, always even */
 
-static void pad_turn_latch(uint16_t dir) {
-	if(dir || !camera_yaw_settled) return;
+static void pad_turn_latch(void) {
 	uint16_t north = (uint16_t)(persp_yaw - 0xC000);
 	int off = (int16_t)(north - (pad_turn << 13));
 	if(off < -0x2000 || off > 0x2000)
@@ -141,8 +173,6 @@ static uint16_t camera_dir(uint16_t dir) {
 	}
 	return dir;
 }
-#else
-#define camera_dir(dir) (dir)
 #endif
 
 /* Rogue's vi keys for the pad's eight directions. */
@@ -160,6 +190,18 @@ static int dir_key(uint16_t dir) {
 	}
 }
 
+#if defined(PERSP) && !defined(BOT) && !defined(BENCH)
+static uint16_t entry_dir;
+
+int game_entry_direction(void) {
+	uint16_t dir = MARS_SYS_COMM8 & DIR_MASK;
+	if(!dir_key(dir)) return 0;
+	pad_turn_latch();
+	entry_dir = camera_dir(dir);
+	return 1;
+}
+#endif
+
 /* --- text ----------------------------------------------------------- */
 
 /* Length of an 80 column row without its trailing blanks. */
@@ -168,36 +210,37 @@ static int row_len(const unsigned char *row, int cols) {
 	return cols;
 }
 
-static int contains(const unsigned char *row, int len, const char *word) {
+static int marker_at(const unsigned char *row, int len, const char *word) {
 	for(int i = 0; i < len; i++) {
 		int j = 0;
 		while(word[j] && i + j < len && (row[i + j] & 0x7F) == word[j]) j++;
-		if(!word[j]) return 1;
+		if(!word[j]) return i;
 	}
-	return 0;
+	return -1;
 }
 
-/* Put text at (x, y) wrapped at word breaks to width w. Returns the row
- * after the last one used. */
-static int put_wrapped(int x, int y, int w, const unsigned char *s, int len, int solid) {
-	int first = y;
-	while(len > 0) {
-		int n = len;
-		if(n > w) {
-			n = w;
-			while(n > w / 2 && (s[n] & 0x7F) != ' ') n--;
-			if((s[n] & 0x7F) != ' ') n = w;
-		}
-		if(solid) {
-			text_fill(HUD_X, y, HUD_W, TEXT_HUD);
-			if(y == first) text_tile(HUD_X, y, TEXT_HUD | HUD_MESSAGE);
-		}
-		text_put(x, y++, (const char *)s, n, solid ? TEXT_HUD : TEXT_WHITE, solid);
-		s += n;
-		len -= n;
-		while(len > 0 && (*s & 0x7F) == ' ') { s++; len--; }
-	}
-	return y;
+static int contains(const unsigned char *row, int len, const char *word) {
+	return marker_at(row, len, word) >= 0;
+}
+
+static int wrap_count(const unsigned char *s, int len, int width) {
+	if(len <= width) return len;
+	int n = width;
+	while(n > 0 && (s[n] & 0x7F) != ' ') n--;
+	return n ? n : width;
+}
+
+static void box_line(int x, int y, int width, const char *line, int len) {
+	text_fill(x + 1, y, width - 2, TEXT_HUD);
+	text_put(x + 2, y, line, len, TEXT_HUD, 1);
+}
+
+static void box_footer(int x, int y, int width, const char *label) {
+	int len = 0;
+	while(label[len]) len++;
+	text_fill(x + 1, y, width - 2, TEXT_HUD);
+	text_tile(x + width - len - 4, y, TEXT_HUD | HUD_CURSOR);
+	text_put(x + width - len - 2, y, label, len, TEXT_HUD, 1);
 }
 
 #define RES_SHOWN     150   /* vblanks a new resolution's name stays up */
@@ -275,11 +318,52 @@ static unsigned char held_msg[MAP_W];
 static int held_len;
 static uint32_t held_at;
 static int hud_holding;   /* the HUD is showing a message Rogue has wiped */
+typedef struct {
+	int slot, command;
+} pickup_t;
+
+static pickup_t pickup, deferred_pickup;
+static int pickup_closed, quick_item;
+
+void plat_descend(void) {
+	held_len = 0;
+	hud_holding = 0;
+	game_stairs_depart();
+}
+
+static int pack_suffix(const unsigned char *scr, int len) {
+	if(len < 3 || (scr[len - 3] & 0x7F) != '(' || (scr[len - 1] & 0x7F) != ')')
+		return 0;
+	int letter = scr[len - 2] & 0x7F;
+	return letter >= 'a' && letter <= 'z' ? letter : 0;
+}
+
+static int pack_prefix(const unsigned char *scr, int len) {
+	if(len < 3) return 0;
+	int letter = (scr[0] & 0x7F) | 0x20;
+	return letter >= 'a' && letter <= 'z' && (scr[1] & 0x7F) == ')' &&
+	       (scr[2] & 0x7F) == ' ';
+}
+
+static int direction_prompt(const unsigned char *scr, int len) {
+	return contains(scr, len, "hich direction?") || contains(scr, len, "Direction:") ||
+	       contains(scr, len, "direction:");
+}
 
 /* The message strip and status panel sit over the dungeon. */
-static void compose_hud(void) {
+static int compose_hud(void) {
 	const unsigned char *scr = rogue_screen();
 	int len = row_len(scr, MAP_W);
+	int more_at = marker_at(scr, len, "--More--");
+	int keys_at = marker_at(scr, len, "(* for list)");
+	if(keys_at < 0) keys_at = marker_at(scr, len, "(* for all)");
+	const char *action = more_at >= 0 ? "A  Continue" : 0;
+	if(!action && rogue_cursor_row() == 0) {
+		if(contains(scr, len, "eally quit?")) action = "A  Yes    C  No";
+		else if(direction_prompt(scr, len)) action = "D-pad  Aim    B  Back";
+	}
+	if(more_at >= 0) len = row_len(scr, more_at);
+	if(keys_at >= 0 && keys_at < len) len = row_len(scr, keys_at);
 
 	hud_holding = 0;
 	if(len > 0) {
@@ -294,8 +378,61 @@ static void compose_hud(void) {
 		held_len = 0;
 	}
 
+	pickup = (pickup_t){0};
+	int slot = pack_suffix(scr, len);
+	if(slot) {
+		len = row_len(scr, len - 3);
+#ifndef BOT
+		if(!hud_holding && marker_at(scr, len, "You now have ") == 0 &&
+		   (more_at >= 0 || (!action && rogue_cursor_row() != 0))) {
+			pickup.command = rogue_pickup_command(slot);
+			if(pickup_closed) {
+				len = held_len = 0;
+			} else if(pickup.command) {
+				pickup.slot = slot;
+				switch(pickup.command) {
+				case 'e': action = "A  Close    C  Eat"; break;
+				case 'q': action = "A  Close    C  Drink"; break;
+				case 'r': action = "A  Close    C  Read"; break;
+				case 'w': action = "A  Close    C  Wield"; break;
+				case 'W': action = "A  Close    C  Wear"; break;
+				case 'P': action = "A  Close    C  Put on"; break;
+				case 'z': action = "A  Close    C  Zap"; break;
+				}
+			}
+		}
+#endif
+	}
+	if(pack_prefix(scr, len)) {
+		scr += 3;
+		len -= 3;
+	}
+
 	text_begin();
-	put_wrapped(HUD_X + 2, MSG_ROW, HUD_W - 3, scr, len, 1);
+	int bottom = 0;
+	if(len || action) {
+		int y = MSG_ROW;
+		/* Give a newly found scroll's title a line of its own. */
+		int titled = marker_at(scr, len, " titled '");
+		const int title_offset = sizeof(" titled ") - 1;
+		if(titled > 0 && marker_at(scr, titled, "You now have ") == 0 &&
+		   contains(scr, titled, " scroll") &&
+		   titled <= HUD_W - 4 && len - titled - title_offset <= HUD_W - 4) {
+			box_line(HUD_X, y++, HUD_W, (const char *)scr, titled);
+			scr += titled + title_offset;
+			len -= titled + title_offset;
+		}
+		while(len > 0) {
+			int n = wrap_count(scr, len, HUD_W - 4);
+			box_line(HUD_X, y++, HUD_W, (const char *)scr, n);
+			scr += n;
+			len -= n;
+			while(len && (*scr & 0x7F) == ' ') { scr++; len--; }
+		}
+		if(action) box_footer(HUD_X, y++, HUD_W, action);
+		text_box_outline(HUD_X, 0, HUD_W, y + 1);
+		bottom = y;
+	}
 	hud_status();
 #ifdef PERSP
 	{
@@ -323,6 +460,7 @@ static void compose_hud(void) {
 #endif
 	}
 #endif
+	return bottom;
 }
 
 static int row_lead(const unsigned char *row, int len) {
@@ -331,29 +469,65 @@ static int row_lead(const unsigned char *row, int len) {
 	return lead;
 }
 
-/* A full screen of Rogue text (inventory, discoveries, the tombstone) on
- * a 40 column display. Rows too wide to fit give up as much of their
- * shared indent as they have, the other rows follow them left so pictures
- * stay aligned, and whatever is still too wide wraps. */
+static int page_len(const unsigned char *row, int cols) {
+	int len = row_len(row, cols);
+	int marker = marker_at(row, len, "--Press space to continue--");
+	if(marker < 0) marker = marker_at(row, len, "[Press return");
+	if(marker < 0) marker = marker_at(row, len, "--More--");
+	return marker < 0 ? len : row_len(row, marker);
+}
+
+static void end_text_page(int footer) {
+	box_footer(HUD_X, footer, HUD_W, "A  Continue");
+	text_box_outline(HUD_X, 1, HUD_W, footer + 1);
+	text_commit();
+	wait_any(game_blank, PAGE_WAIT);
+}
+
+/* Keep all rows of inventories and discovery pages. Wrap long entries
+ * inside the frame and advance the page with a controller button. */
 static void show_page(const unsigned char *cells, int lines, int cols) {
-	int indent = cols;
-	for(int r = 0; r < lines; r++) {
+	int first = 0, last = lines, indent = cols;
+	while(first < last && !page_len(cells + first * cols, cols)) first++;
+	while(last > first && !page_len(cells + (last - 1) * cols, cols)) last--;
+	for(int r = first; r < last; r++) {
 		const unsigned char *row = cells + r * cols;
-		int len = row_len(row, cols);
-		if(len > TEXT_W && row_lead(row, len) < indent) indent = row_lead(row, len);
+		int len = page_len(row, cols);
+		int lead = row_lead(row, len);
+		if(len && lead < indent) indent = lead;
 	}
-	if(indent == cols) indent = 0;
 
 	text_begin();
-	int y = 1;
-	for(int r = 0; r < lines && y < TEXT_H - 1; r++) {
+	int y = 2;
+	for(int r = first; r < last; r++) {
 		const unsigned char *row = cells + r * cols;
-		int len = row_len(row, cols);
-		int skip = row_lead(row, len) < indent ? row_lead(row, len) : indent;
-		if(len == 0) { y++; continue; }
-		y = put_wrapped(0, y, TEXT_W, row + skip, len - skip, 0);
+		int len = page_len(row, cols);
+		if(len) {
+			row += indent;
+			len -= indent;
+		}
+		int lead = row_lead(row, len);
+		if(pack_prefix(row + lead, len - lead)) {
+			row += lead + 3;
+			len -= lead + 3;
+		}
+		int continuation = 0;
+		do {
+			if(y == 25) {
+				end_text_page(y);
+				text_begin();
+				y = 2;
+			}
+			int n = wrap_count(row, len, HUD_W - 4 - continuation);
+			text_fill(HUD_X + 1, y, HUD_W - 2, TEXT_HUD);
+			text_put(HUD_X + 2 + continuation, y++, (const char *)row, n, TEXT_HUD, 1);
+			continuation = 2;
+			row += n;
+			len -= n;
+			while(len && (*row & 0x7F) == ' ') { row++; len--; }
+		} while(len);
 	}
-	text_commit();
+	end_text_page(y);
 }
 
 /* --- lists ---------------------------------------------------------- */
@@ -364,32 +538,47 @@ static int choose(int n, const char *(*line)(int)) {
 	int sel = 0, first = 0, width = 0;
 
 	for(int i = 0; i < n; i++) {
+		const char *label = line(i);
 		int len = 0;
-		while(line(i)[len]) len++;
+		while(label[len]) len++;
 		if(len > width) width = len;
 	}
-	width += 3;   /* cursor, and a space of margin on the right */
+	width += 4;   /* borders, cursor and right margin */
+	if(width < 25) width = 25;
 	if(width > HUD_W) width = HUD_W;
 	int x = TEXT_W - HUD_X - width;
 
 	for(;;) {
+		int message_end = compose_hud();
+		int top = message_end ? message_end + 1 : 2;
+		int visible = STATUS_ROW - top - 4;
 		if(sel < first) first = sel;
-		if(sel >= first + LIST_ROWS) first = sel - LIST_ROWS + 1;
-		compose_hud();
-		for(int i = first; i < n && i < first + LIST_ROWS; i++) {
-			int row = LIST_ROW + i - first;
-			text_fill(x, row, width, TEXT_HUD);
-			if(i == sel) text_tile(x, row, TEXT_HUD | HUD_CURSOR);
-			text_put(x + 2, row, line(i), width - 2, TEXT_HUD, 1);
+		if(sel >= first + visible) first = sel - visible + 1;
+		int count = n - first < visible ? n - first : visible;
+		for(int i = 0; i < count; i++) {
+			int row = top + 1 + i;
+			text_fill(x + 1, row, width - 2, TEXT_HUD);
+			if(first + i == sel) text_tile(x + 1, row, TEXT_HUD | HUD_CURSOR);
+			text_put(x + 2, row, line(first + i), width - 3, TEXT_HUD, 1);
 		}
+		box_footer(x, top + count + 1, width, "A/C Select  B Back");
+		text_box_outline(x, top, width, count + 3);
 		text_commit();
 
 		for(;;) {
 			input_t in = poll(game_frame);
 			if(in.pressed & (SEGA_CTRL_A | SEGA_CTRL_C)) { sfx(SFX_BLIP); return sel; }
 			if(in.pressed & SEGA_CTRL_B) return -1;
-			if(in.dir & SEGA_CTRL_UP)   { sfx(SFX_BLIP); sel = (sel + n - 1) % n; break; }
-			if(in.dir & SEGA_CTRL_DOWN) { sfx(SFX_BLIP); sel = (sel + 1) % n; break; }
+			int delta = (in.dir & SEGA_CTRL_UP) ? -1 : (in.dir & SEGA_CTRL_DOWN) ? 1 : 0;
+			if(!delta) continue;
+			sfx(SFX_BLIP);
+			int previous = sel;
+			sel = (sel + n + delta) % n;
+			if(sel < first || sel >= first + count) break;
+			if(sel == previous) continue;
+			text_fill(x + 1, top + 1 + previous - first, 1, TEXT_HUD);
+			text_tile(x + 1, top + 1 + sel - first, TEXT_HUD | HUD_CURSOR);
+			text_commit();
 		}
 	}
 }
@@ -428,7 +617,13 @@ static const char *pack_line(int i) {
 /* Answer "which object do you want to ...?" by picking from the pack. */
 static int pick_item(void) {
 	int n = 0;
-	while(n < MAX_PACK && (pack_key[n] = (char)rogue_pack(n, pack_text[n], HUD_W - 2)) != 0) n++;
+	while(n < MAX_PACK && (pack_key[n] = (char)rogue_pack(n, pack_text[n], HUD_W - 3)) != 0) n++;
+	if(quick_item) {
+		int letter = quick_item;
+		quick_item = 0;
+		for(int i = 0; i < n; i++)
+			if(pack_key[i] == letter) return letter;
+	}
 	if(n == 0) return ESCAPE;
 
 	int sel = choose(n, pack_line);
@@ -449,9 +644,10 @@ typedef struct {
 } ask_t;
 
 static const ask_t asks[] = {
-	{ "do you want a list", 5,
+	{ "(* for all)", 5,
 	  { "Everything", "Potions", "Scrolls", "Rings", "Wands and staffs" }, "*!?=/" },
 	{ "hand or right hand", 2, { "Left hand", "Right hand" }, "lr" },
+	{ "left or right ring", 2, { "Left hand", "Right hand" }, "lr" },
 };
 #define N_ASKS ((int)(sizeof(asks) / sizeof(asks[0])))
 
@@ -490,7 +686,17 @@ static int prompt_key(void) {
 	}
 	if(contains(scr, len, "--More--")) {
 		if(contains(scr, len, "must identify")) refused = 1;
-		wait_any(game_frame, MORE_WAIT);
+		if(pickup.slot) {
+			/* Finish the turn before issuing Read as the next command. */
+			for(;;) {
+				input_t in = poll(game_frame);
+				if(in.pressed & SEGA_CTRL_C) deferred_pickup = pickup;
+				if(in.pressed & (DIR_MASK | BUTTON_MASK)) break;
+			}
+			held_len = 0;
+		} else {
+			wait_any(game_frame, MORE_WAIT);
+		}
 		return ' ';
 	}
 	if(refused && contains(scr, len, "for list")) {
@@ -515,12 +721,15 @@ static int prompt_key(void) {
 		return guesses[sel][0];
 	}
 
-	/* A direction, or a yes or no: A is yes, C is no, B backs out. */
+	int aim = direction_prompt(scr, len);
 	for(;;) {
 		input_t in = poll(game_frame);
-		if(in.dir) return dir_key(camera_dir(in.dir));
-		if(in.pressed & SEGA_CTRL_A) return 'y';
-		if(in.pressed & SEGA_CTRL_C) return 'n';
+		if(aim && in.dir) {
+			int key = dir_key(camera_dir(in.dir));
+			if(key) return key;
+		}
+		if(!aim && (in.pressed & SEGA_CTRL_A)) return 'y';
+		if(!aim && (in.pressed & SEGA_CTRL_C)) return 'n';
 		if(in.pressed & (SEGA_CTRL_B | SEGA_CTRL_START)) return ESCAPE;
 	}
 }
@@ -530,12 +739,11 @@ static int step_cx, step_cy;     /* ...from this cell */
 
 /* The hero is about to step one cell. If a monster is in the way the step
  * is a blow, and the hero jabs at it. */
-static int step_key(uint16_t pad_dir) {
-	uint16_t dir = camera_dir(pad_dir);
+static int step_key(uint16_t dir) {
 	int dx = ((dir & SEGA_CTRL_RIGHT) != 0) - ((dir & SEGA_CTRL_LEFT) != 0);
 	int dy = ((dir & SEGA_CTRL_DOWN) != 0) - ((dir & SEGA_CTRL_UP) != 0);
 
-	step_dir = pad_dir;
+	step_dir = dir;
 	step_cx = vox_hero_cx;
 	step_cy = vox_hero_cy;
 	if(rogue_who(vox_hero_cx + dx, vox_hero_cy + dy)) {
@@ -551,6 +759,7 @@ static int command_key(void) {
 	(void)idle_since;          /* unused when IDLE_TURN is 0 */
 
 	rogue_idle(0);
+	quick_item = 0;
 	plat_step_frames = STEP;
 #ifdef BOT
 	int key = rogue_bot_key();
@@ -567,8 +776,34 @@ static int command_key(void) {
 		return key;
 	}
 #endif
+	uint16_t pending = 0;
+#if defined(PERSP) && !defined(BOT) && !defined(BENCH)
+	pending = entry_dir;
+	entry_dir = 0;
+#endif
 	for(;;) {
 		input_t in = poll(game_frame);   /* which also takes in Rogue's screen */
+		if(in.tap) pending = in.tap;
+
+		if(deferred_pickup.slot && !vox_hero_busy) {
+			quick_item = deferred_pickup.slot;
+			int key = deferred_pickup.command;
+			deferred_pickup = (pickup_t){0};
+			return key;
+		}
+
+		if(pickup.slot && (in.pressed & (SEGA_CTRL_A | SEGA_CTRL_C))) {
+			if(in.pressed & SEGA_CTRL_C) {
+				quick_item = pickup.slot;
+				held_len = 0;
+				return pickup.command;
+			}
+			pickup_closed = 1;
+			pending = 0;
+			compose_hud();
+			text_commit();
+			continue;
+		}
 
 		/* A step that left the hero where he was cost no turn. Trying it
 		 * again every frame would stop the clock; wait for the world to
@@ -579,8 +814,13 @@ static int command_key(void) {
 		}
 		if(in.held != blocked) blocked = 0;
 
-		/* One step per walk across a cell: a held direction keeps walking. */
-		if(in.held && !blocked && !vox_hero_busy && dir_key(in.held)) return step_key(in.held);
+		/* Keep one tap during a hop or jab. Held directions continue
+		 * walking once the current animation finishes. */
+		if(!vox_hero_busy) {
+			uint16_t dir = pending ? pending : in.held;
+			pending = 0;
+			if(dir != blocked && dir_key(dir)) return step_key(dir);
+		}
 		if(hud_holding && MARS_SYS_COMM12 - held_at >= MSG_HOLD) {
 			compose_hud();
 			text_commit();
@@ -612,6 +852,7 @@ static int command_key(void) {
 			return (rogue_under(vox_hero_cx, vox_hero_cy) == '%') ? '>' : ',';
 		}
 		if(in.pressed & SEGA_CTRL_A) {
+			pending = 0;
 			int sel = choose(N_COMMANDS, command_line);
 			if(sel >= 0) return commands[sel].key;
 			compose_hud();
@@ -686,7 +927,6 @@ int plat_getkey(void) {
 	if(page_cells) {
 		show_page(page_cells, page_lines, page_cols);
 		page_cells = 0;
-		wait_any(game_blank, PAGE_WAIT);
 		return ' ';
 	}
 	/* Rogue's score prompt follows the tombstone on the main screen. */
@@ -704,15 +944,16 @@ int plat_getkey(void) {
 		} else {
 			game_blank();
 			show_page(scr, MAP_H, MAP_W);
-			wait_any(game_blank, PAGE_WAIT);
 		}
 		return '\n';
 	}
 
 	gains();
+	game_stairs_arrive();
 
 	/* Whatever Rogue drew since the last key is now worth showing. */
 	plat_screen_changed = 1;
+	pickup_closed = 0;
 	compose_hud();
 	text_commit();
 

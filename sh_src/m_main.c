@@ -264,7 +264,7 @@ static int ease(int from, int to) {
 
 static uint32_t who(int cx, int cy) { return rogue_who(cx, cy); }
 static int alive(uint32_t id)       { return rogue_alive(id); }
-static int hp(uint32_t id)          { return rogue_hp(id); }
+static int hp(uint32_t id, int *maximum) { return rogue_hp(id, maximum); }
 
 static const vox_source_t source = { rogue_under, who, alive, hp, rogue_ground };
 
@@ -343,7 +343,7 @@ static uint16_t defeat_yaw(int x, int y, int dx, int dy) {
 /* Use a private camera angle and return to the gameplay view before
  * reading the next command. Rogue has already resolved the killing hit. */
 static void play_defeat(int enemy_x, int enemy_y) {
-	enum { APPROACH = 15, FLASH_AT = 17, IMPACT = 22, RETREAT = 34, END = 50 };
+	enum { APPROACH = 15, FLASH_AT = 17, IMPACT = 27, RETREAT = 46, END = 62 };
 	int hx = vox_hero_x + CELL / 2, hy = vox_hero_y + CELL / 2;
 	int dx = enemy_x - hx, dy = enemy_y - hy;
 	int swing = (int16_t)(defeat_yaw(enemy_x, enemy_y, dx, dy) - persp_yaw);
@@ -360,15 +360,16 @@ static void play_defeat(int enemy_x, int enemy_y) {
 			vox_defeat_flash();
 			persp_creatures(0);
 		}
-		if(t >= IMPACT && previous < IMPACT) {
-			vox_release_defeat();
-			sounds();
+		int from = previous < IMPACT - 3 ? IMPACT - 3 : previous;
+		while(from < t) {
+			if(++from == IMPACT) {
+				vox_release_defeat();
+				persp_sync(1);
+				sounds();
+			}
+			vox_animate();
 		}
-		if(t >= IMPACT) {
-			int steps = t - (previous < IMPACT ? IMPACT : previous);
-			while(steps-- > 0) vox_animate();
-			persp_creatures(0);
-		}
+		if(t >= IMPACT - 3) persp_creatures(0);
 		int p = clamp(t, 0, APPROACH) * 256 / APPROACH
 		      - clamp(t - RETREAT, 0, END - RETREAT) * 256 / (END - RETREAT);
 		int eased = ((p * p >> 8) * (768 - 2 * p)) >> 8;
@@ -548,7 +549,7 @@ void game_frame(void) {
 /* Rogue still has its dungeon screen here, including the fatal attacker.
  * Play the scene on the vblank clock without taking any more game turns. */
 void game_death(void) {
-	enum { PUSH = 24, BURST = 32, RETREAT = 59, END = 92 };
+	enum { PUSH = 24, SPATTER = 32, BURST = 45, RETREAT = 72, END = 105 };
 #ifdef PERSP
 	update_hero_gear();
 	int start_pull = duel_pull(gameplay_pull());
@@ -581,7 +582,8 @@ void game_death(void) {
 		int previous = advanced;
 #endif
 		while(advanced < t) {
-			if(++advanced == BURST - 4) vox_hero_hit_flash(1);
+			if(++advanced == SPATTER - 4) vox_hero_hit_flash(1);
+			if(advanced == SPATTER) vox_hero_spatter();
 			if(advanced == BURST) {
 #ifdef PERSP
 				persp_hero_shatter();
@@ -603,7 +605,11 @@ void game_death(void) {
 		int flat = start_flat * (PUSH - push) / PUSH;
 		int x = hx + ((fx - hx) * flat >> 8) + (from_x - hx) * (PUSH - push) / PUSH;
 		int y = hy + ((fy - hy) * flat >> 8) + (from_y - hy) * (PUSH - push) / PUSH;
-		if(advanced != previous) persp_creatures(0);
+		if(advanced != previous) {
+			persp_creatures(0);
+			if(t >= SPATTER + 6)
+				persp_death_pool(hx / CELL, hy / CELL, (unsigned)(t - SPATTER - 6));
+		}
 		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, persp_yaw, pull, flat, cam_res);
 #else
 		vox_prepare((uint16_t *)&MARS_FRAMEBUFFER, currentFB, x, y);
@@ -627,6 +633,124 @@ void game_blank(void) {
 	}
 	sfx_flush();
 	wait_vblank();
+}
+
+#if defined(PERSP) && !defined(BOT) && !defined(BENCH)
+static int stair_depth;
+#define STAIR_CLOSE (-184)
+
+static int stair_ease(int t, int duration) {
+	int p = clamp(t, 0, duration) * 256 / duration;
+	return ((p * p >> 8) * (768 - 2 * p)) >> 8;
+}
+
+static void stair_frame(int x, int y, int pull, int flat) {
+	persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, persp_yaw, pull, flat, cam_res);
+	swapBuffers();
+	sfx_flush();
+}
+#endif
+
+void game_stairs_depart(void) {
+#if defined(PERSP) && !defined(BOT) && !defined(BENCH)
+	enum { PUSH = 16, HOP = 10, STEPS = 3, FADE = 9, END = PUSH + STEPS * HOP };
+	stair_depth = rogue_depth() + 1;
+	text_begin();
+	text_commit();
+
+	update_hero_gear();
+	int height = persp_hero_height();
+	int x = vox_hero_cx * CELL + CELL / 2, y = vox_hero_cy * CELL + CELL / 2;
+	int from_x = x + ((cam_x + VIEW_W / 2 - x) * cam_flat >> 8);
+	int from_y = y + ((cam_y + VIEW_H / 2 - y) * cam_flat >> 8);
+	duel_centre(&from_x, &from_y);
+	int from_pull = duel_pull(gameplay_pull());
+	uint16_t from_yaw = persp_yaw;
+	int swing = (int16_t)(best_view(persp_yaw, 15, 0x1000) - from_yaw);
+	int last_buried = -1, last_offset = -4, last_hop = -1, last_light = -1;
+	uint32_t start = MARS_SYS_COMM12;
+	for(;;) {
+		int t = clamp((int)(MARS_SYS_COMM12 - start), 0, END);
+		int p = stair_ease(t, PUSH);
+		int descend = clamp(t - PUSH, 0, STEPS * HOP);
+		int step = descend / HOP, beat = descend % HOP;
+		int offset = t < PUSH ? -3 * p / 256 :
+		             -3 + step * 2 + (beat * 2 + HOP / 2) / HOP;
+		int hop = (beat * (HOP - beat) + 8) / 12;
+		int buried = step * 2 + (beat * 2 + HOP / 2) / HOP;
+		if(t >= END - FADE)
+			buried += (height - buried) * (t - (END - FADE)) / FADE;
+		int light = VOX_FULL_LIGHT * clamp(END - t, 0, FADE) / FADE;
+		if(buried != last_buried || offset != last_offset || hop != last_hop) {
+			if(t == 0) persp_creatures(0);
+			else persp_stair_hop(buried, offset, hop);
+			last_buried = buried;
+			last_offset = offset;
+			last_hop = hop;
+		}
+		if(light != last_light) {
+			vox_palette(light);
+			last_light = light;
+		}
+		persp_yaw = (uint16_t)(from_yaw + swing * p / 256);
+		stair_frame(from_x + (x - from_x + offset / 2) * p / 256,
+		            from_y + (y - from_y) * p / 256,
+		            from_pull + (STAIR_CLOSE - from_pull) * p / 256,
+		            cam_flat * (256 - p) / 256);
+		if(t == END) break;
+	}
+	blanked = 1;
+#endif
+}
+
+void game_stairs_arrive(void) {
+#if defined(PERSP) && !defined(BOT) && !defined(BENCH)
+	if(!stair_depth || rogue_depth() != stair_depth) return;
+	stair_depth = 0;
+	enum { BLACK_HOLD = 7, DIVE = 20, DROP_AT = 28, FALL = 14,
+	       LAND = DROP_AT + FALL, SETTLE = LAND + 10, PULL = 22, END = SETTLE + PULL };
+	static const uint8_t bounce[] = { 0, 0, 0, 1, 2, 2, 1, 1, 0, 0 };
+	load_dungeon_screen(0);
+	update_hero_gear();
+	duel_mix = 0;
+	uint16_t view = best_view(persp_yaw, 15, 0x1000);
+	persp_yaw = view;
+	int x = vox_hero_cx * CELL + CELL / 2, y = vox_hero_cy * CELL + CELL / 2;
+	int fx = clamp(x - VIEW_W / 2, CAM_X_MIN, CAM_X_MAX) + VIEW_W / 2;
+	int fy = clamp(y - VIEW_H / 2 - 4, CAM_Y_MIN, CAM_Y_MAX) + VIEW_H / 2;
+	int last_altitude = -2, last_light = 0;
+	uint32_t start = MARS_SYS_COMM12;
+	for(;;) {
+		int t = clamp((int)(MARS_SYS_COMM12 - start) - BLACK_HOLD, 0, END);
+		int altitude = -1;
+		if(t >= DROP_AT && t < LAND) {
+			int fall = t - DROP_AT;
+			altitude = 38 - 38 * fall * fall / (FALL * FALL);
+		} else if(t >= LAND) {
+			altitude = t < SETTLE ? bounce[t - LAND] : 0;
+		}
+		int wide = stair_ease(t - SETTLE, PULL);
+		int pull = STAIR_CLOSE + (gameplay_pull() - STAIR_CLOSE) * wide / 256;
+		int flat = cam_flat * wide / 256;
+		if(t < DIVE) pull += (144 - STAIR_CLOSE) * (256 - stair_ease(t, DIVE)) / 256;
+		if(altitude != last_altitude) {
+			persp_arrival_hero(altitude);
+			last_altitude = altitude;
+		}
+		stair_frame(x + ((fx - x) * flat >> 8), y + ((fy - y) * flat >> 8), pull, flat);
+		/* Palette comes up only after the first new-floor frame is visible. */
+		int light = VOX_FULL_LIGHT * clamp(t, 0, DIVE) / DIVE;
+		if(light != last_light) {
+			vox_palette(light);
+			last_light = light;
+		}
+		if(t == END) break;
+	}
+	blanked = 0;
+	anim_tick = MARS_SYS_COMM12;
+	cam_snap = 1;
+	vox_forget();
+#endif
 }
 
 static void title_screen(void) {
@@ -682,8 +806,9 @@ static void enter_dungeon(void) {
 #endif
 
 #if defined(PERSP) && !defined(BOT) && !defined(BENCH)
-	enum { DIVE = 27, RISE = 46, HOLD = 8, PULL_BACK = 28, CLOSEST = -200 };
-	const int pull_at = DIVE + RISE + HOLD;
+	extern int game_entry_direction(void);
+	enum { DIVE = 27, RISE = 46, PULL_BACK = 28, CLOSEST = -200 };
+	const int pull_at = DIVE + RISE;
 	const int end = pull_at + PULL_BACK;
 	update_hero_gear();
 	load_dungeon_screen(0);
@@ -692,10 +817,11 @@ static void enter_dungeon(void) {
 	int x = vox_hero_x + CELL / 2, y = vox_hero_y + CELL / 2;
 	int height = persp_hero_height();
 	int last_buried = -1;
+	int reveal = 0;
 	vox_palette(VOX_FULL_LIGHT);
 	uint32_t entered = MARS_SYS_COMM12;
 	for(;;) {
-		int t = clamp((int)(MARS_SYS_COMM12 - entered), 0, end);
+		int t = clamp((int)(MARS_SYS_COMM12 - entered), 0, reveal ? end : pull_at);
 		int rise = clamp(t - DIVE, 0, RISE);
 		int buried = height - rise * height / RISE;
 		int pull = CLOSEST;
@@ -712,6 +838,12 @@ static void enter_dungeon(void) {
 		}
 		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, persp_yaw, pull, 0, cam_res);
 		swapBuffers();
+		if(!reveal && t == pull_at) {
+			/* The fully raised hero stays on screen until the D-pad moves. */
+			while(!game_entry_direction()) wait_vblank();
+			entered = MARS_SYS_COMM12 - pull_at;
+			reveal = 1;
+		}
 		if(t == end) break;
 	}
 	anim_tick = MARS_SYS_COMM12;

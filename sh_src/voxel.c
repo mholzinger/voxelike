@@ -16,7 +16,9 @@ enum {
     M_VOID, M_FLOOR, M_FLOOR2, M_WALL, M_WALL_LOW, M_DOOR_H, M_DOOR_LOW, M_DOOR_V,
     M_PASSAGE, M_STAIRS, M_TRAP, M_GOLD, M_POTION, M_SCROLL, M_FOOD, M_WEAPON,
     M_ARMOR, M_RING, M_STICK, M_AMULET, M_MAGIC,
-    M_COUNT
+    M_ROCK_EDGE, M_ROCK_CORNER = M_ROCK_EDGE + 4,
+    M_ROCK_JOIN = M_ROCK_CORNER + 4,
+    M_COUNT = M_ROCK_JOIN + 4
 };
 
 vmodel_t vox_models[M_COUNT];
@@ -27,6 +29,7 @@ uint16_t vox_wtab[256];              /* CRAM index -> doubled pixel word */
 /* The world as last loaded, one entry per Rogue screen cell. */
 uint8_t vox_tile[MAP_H][MAP_W];    /* terrain model */
 uint8_t vox_lift[MAP_H][MAP_W];    /* voxels of plinth under the cell's model */
+static uint8_t stains[(MAP_H * MAP_W + 7) / 8];
 uint8_t vox_light[MAP_H][MAP_W];   /* top-face shade 0..7 */
 
 int vox_hero_cx, vox_hero_cy;
@@ -47,8 +50,11 @@ int vox_hero_face;
 #define LUNGE      12     /* frames an attack keeps the hero busy */
 #define JAB_WAIT   6      /* frames a creature's answer waits for the hero's blow */
 #define FLASH      5      /* frames a hurt creature shows in one colour */
+#define IMPACT_HOLD 6     /* vblanks of hitstop for a blow worth 25% max HP */
+#define LOW_HP_HALF 12    /* vblanks in each half of the warning pulse */
 #define MAX_PARTS  96
 #define PART_LIFE  28
+#define PART_ENEMY_SPATTER 2u  /* unused bit below a particle’s material index */
 #define PART_REST  10     /* frames a piece lies where it fell */
 #define GRAVITY    5      /* 1/16 voxel per frame per frame */
 #define SLIDE_MAX  2      /* cells; a longer move is a teleport, not a walk */
@@ -67,6 +73,7 @@ typedef struct {
     uint8_t wait;         /* frames until the lunge starts */
     uint8_t flash_wait;   /* frames until the flash starts */
     uint8_t flash;        /* frames of flash left */
+    uint8_t heavy_hit;    /* begin hitstop when the hit flash starts */
     int16_t hp;           /* hit points when last looked at */
 } ent_t;
 
@@ -76,6 +83,12 @@ static ent_t defeated;
 static int defeat_staged;
 static uint32_t duel_foe;
 static int hero_hit_pending;
+static uint32_t impact_id;
+static unsigned impact_left;
+static unsigned low_hp_phase;
+static int low_hp, hero_color_changed;
+
+enum { PART_SMALL, PART_CHUNK, PART_BUOYANT, PART_FLOATING = PART_BUOYANT + 3 };
 
 /* A loose voxel, in sixteenths: what a creature leaves when it dies. */
 typedef struct {
@@ -83,7 +96,7 @@ typedef struct {
     int8_t vx, vy, vz;
     uint8_t life;
     uint8_t pixel;        /* as in a creature sprite: material and face */
-    uint8_t chunk;        /* larger, heavier fragment from the equipped hero */
+    uint8_t chunk;        /* particle size and whether it can float */
 } part_t;
 
 static part_t parts[MAX_PARTS];
@@ -91,6 +104,18 @@ static int n_parts;
 static int last_depth;
 
 #define HIT_FLASH    (MAT(MT_PAPER) + 7)
+
+static int recoil_x(const ent_t *e) {
+    if (!impact_left || e->id != impact_id) return 0;
+    return (impact_left & 2) ? 1 : -1;
+}
+
+static unsigned creature_flash(const ent_t *e) {
+    if (e->flash && !e->flash_wait) return HIT_FLASH;
+    if (e->id == HERO_ID && low_hp && low_hp_phase < LOW_HP_HALF)
+        return MAT(MT_RED) + 7;
+    return 0;
+}
 
 /* Which way a step of (dx, dy) looks. */
 static uint8_t facing(int dx, int dy) {
@@ -112,6 +137,8 @@ static const int8_t lunge_reach[LUNGE + 1] = { 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 
 #define STAIR_DROP  2      /* the stairs' cell is this much lower than its room */
 
 /* A front face is darker than the top face lit by the same light. */
+const uint8_t vox_shadow_material = MAT(MT_SHADOW);
+const uint8_t vox_blood_material = MAT(MT_FOOD); /* deep red */
 const uint8_t vox_front_shade[N_SHADES] = { 0, 0, 1, 2, 2, 3, 4, 5 };
 
 /* --- The canvas ------------------------------------------------------
@@ -163,6 +190,10 @@ static void stack(vmodel_t *m, int x0, int x1, int y0, int y1, int n, uint8_t ma
         }
     }
 }
+
+/* Clockwise from north, shared by the rock mesh and adjacency pass. */
+static const int8_t edge_x[] = { 0, 1, 0, -1 };
+static const int8_t edge_y[] = { -1, 0, 1, 0 };
 
 static void build_models(void) {
     memset(vox_models, 0, sizeof(vox_models));
@@ -219,7 +250,32 @@ static void build_models(void) {
     }
 
     /* Things lying on the floor. */
-    for (int m = M_TRAP; m < M_COUNT; m++) vox_models[m] = vox_models[M_FLOOR];
+    for (int m = M_TRAP; m < M_ROCK_EDGE; m++) vox_models[m] = vox_models[M_FLOOR];
+
+    for (int x = 0; x < CELL; x++) {
+        for (int y = 0; y < CELL; y++) {
+            int distance[] = { y, CELL - 1 - x, CELL - 1 - y, x };
+            for (int d = 0; d < 4; d++) {
+                unsigned rough = (x * 5 + y * 3 + d * 7) ^ (x * y);
+                int a = distance[d], b = distance[(d + 1) & 3];
+                uint8_t stone = MAT((rough & 2) ? MT_DIRT : MT_DIRT2);
+                if (a < 2 + (int)(rough & 1))
+                    col_set(&vox_models[M_ROCK_EDGE + d].col[x][y],
+                            a == 0 ? 2 + ((rough >> 2) & 1) : 1, stone);
+                if (a * a + b * b <= 9)
+                    col_set(&vox_models[M_ROCK_CORNER + d].col[x][y],
+                            a * a + b * b <= 4 ? 2 : 1, stone);
+                /* Round the inside of the bend between two straight banks. */
+                int ax = 6 - a, by = 6 - b;
+                if (ax < 0) ax = 0;
+                if (by < 0) by = 0;
+                int radius_sq = ax * ax + by * by;
+                if (radius_sq >= 20)
+                    col_set(&vox_models[M_ROCK_JOIN + d].col[x][y],
+                            radius_sq >= 30 ? 2 : 1, stone);
+            }
+        }
+    }
 
     for (int i = 0; i < 4; i++)
         stack(&vox_models[M_TRAP], 2 + (i & 1) * 3, 2 + (i & 1) * 3,
@@ -335,6 +391,70 @@ static void stale_cell(int cx, int cy) {
     stale(cx * CELL, cx * CELL + CELL - 1, near - (CELL - 1) - COL_MAXH, near);
 }
 
+#define MAX_ASSEMBLY 8
+static struct {
+    vmodel_t model;
+    uint8_t x, y, tile;
+} assembly[MAX_ASSEMBLY];
+static int assembly_count, assembly_age, assembly_dx, assembly_dy;
+
+int vox_assembly_cell(int i, int *cx, int *cy) {
+    if (i >= assembly_count) return 0;
+    *cx = assembly[i].x;
+    *cy = assembly[i].y;
+    return 1;
+}
+
+const vmodel_t *vox_assembly_model(int cx, int cy) {
+    if (assembly_age >= 8) return 0;
+    for (int i = 0; i < assembly_count; i++) {
+        unsigned tile = assembly[i].tile;
+        int end = tile == M_PASSAGE ? 6 : 8;
+        if (assembly_age < end && assembly[i].x == cx && assembly[i].y == cy &&
+            tile == vox_tile[cy][cx]) return &assembly[i].model;
+    }
+    return 0;
+}
+
+static void build_assembly(int i) {
+    unsigned tile = assembly[i].tile;
+    int bank = tile != M_PASSAGE;
+    int limit = assembly_age / 2 * 3 + (bank ? 0 : 2);
+    vmodel_t *m = &assembly[i].model;
+    const vmodel_t *base = &vox_models[tile];
+    for (int x = 0; x < CELL; x++) {
+        for (int y = 0; y < CELL; y++) {
+            int dx = assembly_dx > 0 ? x : CELL - 1 - x;
+            int dy = assembly_dy > 0 ? y : CELL - 1 - y;
+            int order = (assembly_dx ? dx : 0) + (assembly_dy ? dy : 0);
+            if (assembly_dx && assembly_dy) order >>= 1;
+            int scatter = ((x * 3 + y * 5) ^ (x * y)) & 3;
+            if (order + scatter < limit) m->col[x][y] = base->col[x][y];
+            else m->col[x][y].h = 0;
+        }
+    }
+}
+
+static void queue_assembly(int x, int y, unsigned tile) {
+    if (assembly_count == MAX_ASSEMBLY) return;
+    int i = assembly_count++;
+    assembly[i].x = (uint8_t)x;
+    assembly[i].y = (uint8_t)y;
+    assembly[i].tile = (uint8_t)tile;
+    build_assembly(i);
+}
+
+static void animate_assembly(void) {
+    if (!assembly_count || assembly_age >= 8 || (++assembly_age & 1)) return;
+    for (int i = 0; i < assembly_count; i++) {
+        int end = assembly[i].tile == M_PASSAGE ? 6 : 8;
+        if (assembly_age > end) continue;
+        if (assembly_age < end) build_assembly(i);
+        stale_cell(assembly[i].x, assembly[i].y);
+        vox_moving = 1;
+    }
+}
+
 /* How high the ground is under the middle of a footprint at (x, y). */
 static int lift_under(int x, int y) {
     return vox_lift[(y + CELL / 2) >> 3][(x + CELL / 2) >> 3];
@@ -344,7 +464,7 @@ static int lift_under(int x, int y) {
  * that changes height stales itself, and the creature is redrawn with it,
  * so the tallest ground is allowed for here. */
 static void stale_ent(const ent_t *e) {
-    int x = e->x + e->ox;
+    int x = e->x + e->ox + recoil_x(e);
     int r = e->y + e->oy - ROW_MIN;
     stale(x, x + CELL - 1, r - ENT_ORIGIN - e->z - LIFT_MAX, r + CELL - 1);
 }
@@ -406,11 +526,27 @@ static unsigned chance(void) {
     return seed >> 16;
 }
 
+int vox_stained(int cx, int cy) {
+    unsigned cell = cy * MAP_W + cx;
+    return (stains[cell >> 3] >> (cell & 7)) & 1;
+}
+
+static void stain_enemy_floor(const ent_t *e) {
+    unsigned cx = e->tx / CELL, cy = e->ty / CELL;
+    if (cx >= MAP_W || cy >= MAP_H || vox_stained(cx, cy)) return;
+    unsigned cell = cy * MAP_W + cx;
+    stains[cell >> 3] |= 1u << (cell & 7);
+    stale_cell(cx, cy);
+}
+
+static void spatter(const ent_t *e, int count);
+
 /* Turn a creature into loose voxels where it stands: a sample of its
  * sprite, thrown up and outward. */
 static void shatter(const ent_t *e, int chunk) {
     int ex = e->x + e->ox, ey = e->y + e->oy;
     int total = 0, skip, n = 0;
+    unsigned floating_bands = 0;
 
     for (int lx = 0; lx < CELL; lx++) {
         for (int k = 0; k < ENT_ROWS; k++) total += ent_sprite[e->kind][lx][k] != 0;
@@ -439,6 +575,15 @@ static void shatter(const ent_t *e, int chunk) {
             p->life = PART_LIFE + (chunk ? PART_REST : 0);
             p->pixel = (uint8_t)v;
             p->chunk = (uint8_t)chunk;
+            unsigned band = k < ENT_ORIGIN - 4 ? 2 : 0;
+            if (chunk && e->kind && lx >= 2 && lx <= 5 &&
+                !(floating_bands & (1u << band)) && (v & ~7u) != MAT(MT_SHADOW)) {
+                floating_bands |= 1u << band;
+                p->chunk = (uint8_t)(PART_BUOYANT + band);
+                p->life = 66;
+                p->vx = (int8_t)(e->tx / CELL);
+                p->vy = (int8_t)(e->ty / CELL);
+            }
             stale_part(p);
         }
     }
@@ -455,6 +600,7 @@ void vox_defeat_flash(void) {
     if (!defeat_staged) return;
     defeated.flash = FLASH;
     defeated.flash_wait = 0;
+    spatter(&defeated, 12);
 }
 
 static int adjacent_to_hero(const ent_t *e) {
@@ -464,23 +610,37 @@ static int adjacent_to_hero(const ent_t *e) {
 }
 
 int vox_duel_target(int *x, int *y) {
-    if (!duel_foe) return 0;
+    const ent_t *target = 0;
+    int nearest = 2 * CELL * CELL + 1;
     for (int i = 0; i < n_ents; i++) {
         const ent_t *e = &ents[i];
-        if (e->id != duel_foe) continue;
-        if (!adjacent_to_hero(e)) break;
-        *x = e->x + CELL / 2;
-        *y = e->y + CELL / 2;
-        return 1;
+        if (!e->kind || !adjacent_to_hero(e)) continue;
+        /* Keep the current opponent while it is in reach. Otherwise
+         * prefer an edge neighbor over one across a corner. */
+        if (e->id == duel_foe) {
+            target = e;
+            break;
+        }
+        int dx = e->tx - vox_hero_cx * CELL;
+        int dy = e->ty - vox_hero_cy * CELL;
+        int distance = dx * dx + dy * dy;
+        if (distance < nearest) {
+            target = e;
+            nearest = distance;
+        }
     }
-    duel_foe = 0;
-    return 0;
+    duel_foe = target ? target->id : 0;
+    if (!target) return 0;
+    *x = target->x + CELL / 2;
+    *y = target->y + CELL / 2;
+    return 1;
 }
 
 void vox_release_defeat(void) {
     if (!defeat_staged) return;
     stale_ent(&defeated);
     shatter(&defeated, 1);
+    stain_enemy_floor(&defeated);
     vox_events |= VOX_BURST;
     defeat_staged = 0;
 }
@@ -492,6 +652,7 @@ void vox_hero_hit_flash(int on) {
         stale_ent(e);
         e->flash = on ? FLASH : 0;
         e->flash_wait = 0;
+        e->heavy_hit = 0;
         return;
     }
 }
@@ -502,45 +663,69 @@ static void hero_fragment(int x, int y, int z, int vx, int vy, int vz,
     *p = (part_t){
         .x = (int16_t)(x * 16), .y = (int16_t)(y * 16), .z = (int16_t)(z * 16),
         .vx = (int8_t)vx, .vy = (int8_t)vy, .vz = (int8_t)vz,
-        .life = PART_LIFE + (chunk ? PART_REST : 0),
+        .life = chunk >= PART_BUOYANT ? 66 : PART_LIFE + (chunk ? PART_REST : 0),
         .pixel = (uint8_t)pixel, .chunk = (uint8_t)chunk,
     };
     stale_part(p);
 }
 
+static void spatter(const ent_t *e, int count) {
+    int ex = e->x + e->ox, ey = e->y + e->oy;
+    int floor = lift_under(ex, ey) + e->z;
+    for (int n = 0; n < count && n_parts < MAX_PARTS; n++) {
+        int vx = (int)(chance() % 55) - 27;
+        int vy = (int)(chance() % 47) - 23;
+        int vz = 17 + (int)(chance() & 15);
+        int z = floor + 5 + (int)(chance() & 3);
+        unsigned pixel = MAT(MT_RED) | (n & 1);
+        if (e->kind) pixel |= PART_ENEMY_SPATTER;
+        hero_fragment(ex + CELL / 2, ey + CELL / 2, z, vx, vy, vz, pixel, 0);
+    }
+}
+
+void vox_hero_spatter(void) {
+    for (int i = 0; i < n_ents; i++) {
+        const ent_t *e = &ents[i];
+        if (e->id != HERO_ID) continue;
+        /* Reserve room for the spray and the later body breakup. */
+        while (n_parts > MAX_PARTS / 8) stale_part(&parts[--n_parts]);
+        spatter(e, 28);
+        return;
+    }
+}
+
 void vox_hero_shatter(const vcol_t model[CELL][CELL]) {
-    enum { BLOOD_COUNT = 28 };
     for (int i = 0; i < n_ents; i++) {
         ent_t *e = &ents[i];
         if (e->id != HERO_ID) continue;
         int ex = e->x + e->ox, ey = e->y + e->oy;
         int floor = lift_under(ex, ey) + e->z;
 
-        /* Reserve room for the two effects even if a monster just broke up. */
-        while (n_parts > MAX_PARTS / 8) stale_part(&parts[--n_parts]);
         if (model) {
+            unsigned floating_bands = 0;
             for (int x = 0; x < CELL; x++) {
                 for (int y = 0; y < CELL; y++) {
                     const vcol_t *col = vox_model_column(model, e->face, x, y);
-                    for (int z = 0; z < col->h && n_parts < MAX_PARTS - BLOOD_COUNT; z++) {
+                    for (int z = 0; z < col->h && n_parts < MAX_PARTS; z++) {
                         unsigned material = col->c[z];
                         if (material == MAT(MT_SHADOW) || (x + y + z) % 6) continue;
                         int vx = (2 * x - 7) * 2 + (int)(chance() & 7) - 3;
                         int vy = (2 * y - 7) * 2 + (int)(chance() & 7) - 3;
                         int vz = 4 + (int)(chance() & 7);
-                        hero_fragment(ex + x, ey + y, floor + 1 + z, vx, vy, vz, material + 1, 1);
+                        int kind = PART_CHUNK;
+                        unsigned band = z >= 9 ? 2 : z >= 3 ? 1 : 0;
+                        if (x >= 2 && x <= 5 && y >= 2 && y <= 5 && !(floating_bands & (1u << band))) {
+                            floating_bands |= 1u << band;
+                            kind = PART_BUOYANT + band;
+                            vx = vox_hero_cx;
+                            vy = vox_hero_cy;
+                        }
+                        hero_fragment(ex + x, ey + y, floor + 1 + z, vx, vy, vz, material + 1, kind);
                     }
                 }
             }
         } else {
             shatter(e, 0);
-        }
-        for (int n = 0; n < BLOOD_COUNT && n_parts < MAX_PARTS; n++) {
-            int vx = (int)(chance() % 55) - 27;
-            int vy = (int)(chance() % 47) - 23;
-            int vz = 17 + (int)(chance() & 15);
-            int z = floor + 5 + (int)(chance() & 3);
-            hero_fragment(ex + CELL / 2, ey + CELL / 2, z, vx, vy, vz, MAT(MT_RED) + (n & 1), 0);
         }
         stale_ent(e);
         *e = ents[--n_ents];
@@ -550,12 +735,35 @@ void vox_hero_shatter(const vcol_t model[CELL][CELL]) {
 
 int vox_particles_active(void) { return n_parts != 0; }
 
+static int drift_toward(int difference, int speed) {
+    return difference < -speed ? -speed : difference > speed ? speed : difference;
+}
+
 static void parts_animate(void) {
     for (int i = 0; i < n_parts; ) {
         part_t *p = &parts[i];
         stale_part(p);
         int rest = p->chunk ? 2 * PART_REST : PART_REST;
-        if (p->life > rest) {
+        if (p->chunk >= PART_BUOYANT) {
+            static const int8_t pool_x[] = { -23, 22, 0 };
+            static const int8_t pool_y[] = {  10,  9, -23 };
+            int floating = p->chunk >= PART_FLOATING;
+            unsigned band = p->chunk - (floating ? PART_FLOATING : PART_BUOYANT);
+            int phase = (p->life + band * 5) & 15;
+            int bob = phase < 8 ? phase : 15 - phase;
+            int target_x = (p->vx * CELL + CELL / 2) * 16 + pool_x[band];
+            int target_y = (p->vy * CELL + CELL / 2) * 16 + pool_y[band];
+            if (floating) {
+                target_x += bob - 3;
+                target_y -= bob - 3;
+            }
+            p->x += drift_toward(target_x - p->x, floating ? 1 : 5);
+            p->y += drift_toward(target_y - p->y, floating ? 1 : 5);
+            if (!floating) {
+                p->z += p->vz;
+                p->vz -= GRAVITY;
+            }
+        } else if (p->life > rest) {
             p->x += p->vx;
             p->y += p->vy;
             p->z += p->vz;
@@ -566,8 +774,18 @@ static void parts_animate(void) {
             *p = parts[--n_parts];
             continue;
         }
-        int floor = vox_lift[p->y >> 7][p->x >> 7] << 4;
-        if (p->z <= floor && p->vz <= 0) {
+        int cx = p->x >> 7, cy = p->y >> 7;
+        int floor = vox_lift[cy][cx] << 4;
+        if (p->chunk >= PART_BUOYANT) {
+            const vcol_t *terrain = &vox_models[vox_tile[cy][cx]].col[(p->x >> 4) & 7][(p->y >> 4) & 7];
+            int surface = floor + terrain->h * 16;
+            if (p->chunk < PART_FLOATING && p->z <= surface && p->vz <= 0)
+                p->chunk += PART_FLOATING - PART_BUOYANT;
+            if (p->chunk >= PART_FLOATING) {
+                int phase = (p->life + p->pixel) & 15;
+                p->z = (int16_t)(surface + 5 + (phase < 8 ? phase : 15 - phase));
+            }
+        } else if (p->z <= floor && p->vz <= 0) {
             p->z = (int16_t)floor;
             if (p->life > rest) p->life = (uint8_t)rest;
         }
@@ -576,12 +794,32 @@ static void parts_animate(void) {
     }
 }
 
+/* Wind-up, contact, follow-through. Weapon offsets are relative to the
+ * front-facing hero. Tilt brings the upper end forward around the grip. */
+const vox_attack_pose_t *vox_attack_pose(int weapon, unsigned remaining) {
+    static const vox_attack_pose_t poses[10][3] = {
+        { {-1,0, 0,-1,2,-1}, { 3,1, 0,1,0,3}, { 1,0, 0,2,-1,3} }, /* mace */
+        { {-1,0, 0,-2,1,-2}, { 3,0, 0,1,1,-4}, { 1,0, 1,1,0,-3} }, /* sword */
+        { { 0,0, 0,-1,1, 0}, { 2,0, 0,2,1,1}, { 0,0, 0,1, 0,1} }, /* bow */
+        { { 0,0, 0,-1,1, 0}, { 2,0, 0,1,2,3}, { 1,0, 0,1, 1,1} }, /* arrow */
+        { { 0,0, 0,-1,1, 0}, { 4,0, 0,2,1,4}, { 2,0, 0,1, 0,2} }, /* dagger */
+        { {-2,0, 0,-2,2,-3}, { 2,1, 0,1,1,-5}, { 1,0, 1,2, 0,-4} }, /* two-handed sword */
+        { { 0,0, 0,-1,2,-1}, { 2,0, 0,2,2,3}, { 0,0, 0,1, 1,0} }, /* dart */
+        { {-1,0, 0,-1,1,-1}, { 2,0, 0,2,1,3}, { 1,0, 1,1, 0,2} }, /* shuriken */
+        { {-1,0, 0,-2,1, 2}, { 4,0, 0,1,0,5}, { 2,0, 0,1, 0,4} }, /* spear */
+        { {-1,0, 0, 0,0, 0}, { 3,0, 0,0,0,0}, { 1,0, 0,0, 0,0} }, /* unarmed */
+    };
+    if (remaining <= 2) return 0;
+    unsigned phase = remaining >= 10 ? 0 : remaining >= 6 ? 1 : 2;
+    return &poses[(unsigned)weapon < 9 ? weapon : 9][phase];
+}
+
 static void hero_follow(void) {
     for (int i = 0; i < n_ents; i++) {
         if (ents[i].id != HERO_ID) continue;
         vox_hero_x = ents[i].x;
         vox_hero_y = ents[i].y;
-        vox_hero_busy = ents[i].left || ents[i].lunge;
+        vox_hero_busy = ents[i].left || ents[i].lunge || ents[i].heavy_hit || impact_left;
         vox_hero_face = ents[i].face;
         return;
     }
@@ -589,7 +827,34 @@ static void hero_follow(void) {
 }
 
 void vox_animate(void) {
-    vox_moving = 0;
+    vox_moving = hero_color_changed;
+    hero_color_changed = 0;
+    if (low_hp && ++low_hp_phase == 2 * LOW_HP_HALF) low_hp_phase = 0;
+    ent_t *recoiling = 0;
+    for (int i = 0; i < n_ents; i++) {
+        ent_t *e = &ents[i];
+        if (low_hp && e->id == HERO_ID &&
+            (low_hp_phase == 0 || low_hp_phase == LOW_HP_HALF)) {
+            stale_ent(e);
+            vox_moving = 1;
+        }
+        if (!impact_left && e->heavy_hit && !e->flash_wait) {
+            stale_ent(e);
+            e->heavy_hit = 0;
+            impact_id = e->id;
+            impact_left = IMPACT_HOLD + 1;
+        }
+        if (impact_left && e->id == impact_id) recoiling = e;
+    }
+    if (impact_left) {
+        if (recoiling) stale_ent(recoiling);
+        impact_left--;
+        if (recoiling) stale_ent(recoiling);
+        vox_moving = 1;
+        hero_follow();
+        return;
+    }
+    animate_assembly();
     for (int i = 0; i < n_ents; i++) {
         ent_t *e = &ents[i];
         if (!e->left && !e->lunge && !e->flash) continue;
@@ -606,8 +871,16 @@ void vox_animate(void) {
             e->wait--;
         } else if (e->lunge) {
             e->lunge--;
-            e->ox = (int8_t)(e->ldx * lunge_reach[e->lunge]);
-            e->oy = (int8_t)(e->ldy * lunge_reach[e->lunge]);
+            int reach = lunge_reach[e->lunge];
+#ifdef PERSP
+            if (e->id == HERO_ID) {
+                const vox_attack_pose_t *pose = vox_attack_pose(vox_hero_weapon, e->lunge);
+                reach = pose ? pose->reach : 0;
+                e->z = pose ? pose->hop : 0;
+            }
+#endif
+            e->ox = (int8_t)(e->ldx * reach);
+            e->oy = (int8_t)(e->ldy * reach);
         }
         if (e->flash_wait) e->flash_wait--;
         else if (e->flash) e->flash--;
@@ -638,27 +911,32 @@ void vox_jab(uint32_t id) {
     }
 }
 
+static inline int spatter_dimmed(const part_t *p) {
+    return (p->pixel & PART_ENEMY_SPATTER) && p->life <= PART_LIFE - 2;
+}
+
 int vox_piece(int i, int *x, int *y, int *z, unsigned *colour) {
     if (i >= n_parts) return 0;
     const part_t *p = &parts[i];
     *x = p->x;
     *y = p->y;
     *z = p->z;
-    *colour = (p->pixel & ~7u) + ((p->pixel & 1) ? 7 : 5);
+    *colour = (p->pixel & ~7u) + ((p->pixel & 1) ? 7 : 5) - spatter_dimmed(p);
     return p->chunk ? 2 : 1;
 }
 
 int vox_creature(int i, vox_creature_t *c) {
     if (i >= n_ents + defeat_staged) return 0;
     const ent_t *e = i < n_ents ? &ents[i] : &defeated;
-    c->x = e->x + e->ox;
+    c->x = e->x + e->ox + recoil_x(e);
     c->y = e->y + e->oy;
     c->z = e->z;
     c->kind = e->kind;
     c->face = e->face;
+    c->attack = e->id == HERO_ID ? e->lunge : 0;
     if (defeat_staged && e->id == HERO_ID)
         c->face = facing(defeated.x - e->x, defeated.y - e->y);
-    c->flash = (e->flash && !e->flash_wait) ? HIT_FLASH : 0;
+    c->flash = creature_flash(e);
     return 1;
 }
 
@@ -674,6 +952,63 @@ void vox_hero_lunge(int dx, int dy) {
     }
 }
 
+static unsigned passage_at(int x, int y) {
+    return (unsigned)x < MAP_W && y > 0 && y < MAP_H - 1 &&
+           vox_tile[y][x] == M_PASSAGE;
+}
+
+/* Line discovered passages on the rendering map after the real tiles have
+ * settled. Blank screen cells can conceal a real floor or door, so check
+ * the underlying cell before placing scenery there. */
+static void fringe_passages(vox_under_fn under, int assembling, int tread_count) {
+    for (int y = 1; y < MAP_H - 1; y++) {
+        for (int x = 0; x < MAP_W; x++) {
+            unsigned old = vox_tile[y][x];
+            if (old != M_VOID && old < M_ROCK_EDGE) continue;
+            unsigned rock = M_VOID, light = vox_light[y][x];
+            unsigned edges = 0;
+            for (int d = 0; d < 4; d++) {
+                int nx = x + edge_x[d], ny = y + edge_y[d];
+                if (!passage_at(nx, ny)) continue;
+                if (!edges || vox_light[ny][nx] > light) light = vox_light[ny][nx];
+                if (!edges) rock = M_ROCK_EDGE + d;
+                edges |= 1u << d;
+            }
+            for (int d = 0; edges && d < 4; d++) {
+                unsigned pair = (1u << d) | (1u << ((d + 1) & 3));
+                if ((edges & pair) != pair) continue;
+                rock = M_ROCK_JOIN + d;
+                break;
+            }
+            if (rock == M_VOID) {
+                for (int d = 0; d < 4; d++) {
+                    int next = (d + 1) & 3;
+                    int nx = x + edge_x[d] + edge_x[next];
+                    int ny = y + edge_y[d] + edge_y[next];
+                    if (!passage_at(nx, ny) ||
+                        !passage_at(nx + edge_x[d], ny + edge_y[d]) ||
+                        !passage_at(nx + edge_x[next], ny + edge_y[next])) continue;
+                    rock = M_ROCK_CORNER + d;
+                    light = vox_light[ny][nx];
+                    break;
+                }
+            }
+            if (rock != M_VOID && under(x, y) != ' ') rock = M_VOID;
+            if (rock == old && (rock == M_VOID || light == vox_light[y][x])) continue;
+            vox_tile[y][x] = (uint8_t)rock;
+            vox_light[y][x] = (uint8_t)light;
+            vox_lift[y][x] = 0;
+            stale_cell(x, y);
+            if (!assembling || old != M_VOID || rock == M_VOID) continue;
+            for (int i = 0; i < tread_count; i++) {
+                if (abs(x - assembly[i].x) > 1 || abs(y - assembly[i].y) > 1) continue;
+                queue_assembly(x, y, rock);
+                break;
+            }
+        }
+    }
+}
+
 /* Row 0 of Rogue's screen is its message line and the last row its status
  * line; neither is dungeon. */
 int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
@@ -681,12 +1016,17 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
     vox_under_fn under = src->under;
     int same_level = (depth == last_depth);
     int terrain_changed = !same_level;
+    int has_passages = 0;
+    int old_x = vox_hero_cx, old_y = vox_hero_cy;
 
     last_depth = depth;
     hero_hit_pending = 0;
     if (!same_level) {
         frames = 0;
         duel_foe = 0;
+        impact_left = 0;
+        memset(stains, 0, sizeof stains);
+        while (n_parts) stale_part(&parts[--n_parts]);
     }
     for (int i = 0; i < n_ents; i++) ents[i].seen = 0;
 
@@ -697,12 +1037,22 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
             break;
         }
     }
+    int dx = vox_hero_cx - old_x, dy = vox_hero_cy - old_y;
+    int assembling = same_level && frames > 0 && (dx || dy) && abs(dx) <= 1 && abs(dy) <= 1;
+    if (!same_level || dx || dy) {
+        for (int i = 0; i < assembly_count; i++) stale_cell(assembly[i].x, assembly[i].y);
+        assembly_count = assembly_age = 0;
+        assembly_dx = dx;
+        assembly_dy = dy;
+    }
 
     for (int cy = 1; cy < MAP_H - 1; cy++) {
         for (int cx = 0; cx < MAP_W; cx++) {
             int ch = cells[cy * MAP_W + cx] & 0x7F;
             int ent = ent_for(ch);
             uint8_t tile = tile_for(ent < 0 ? ch : under(cx, cy), cx, cy, under);
+            if (tile == M_VOID && same_level && vox_tile[cy][cx] >= M_ROCK_EDGE)
+                continue;   /* refreshed after all discovered tiles are loaded */
 
             uint8_t light = LIGHT_DIM;
             if (room && cx >= room[0] && cx <= room[2] && cy >= room[1] && cy <= room[3]) {
@@ -720,13 +1070,15 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                 tile = vox_tile[cy][cx];
                 if (light < LIGHT_NEAR) light = LIGHT_MEMORY;
             }
+            has_passages |= tile == M_PASSAGE;
 
             int lift = 0;
             if (tile != M_VOID) {
                 unsigned old = vox_tile[cy][cx];
                 /* Room height is fixed for the level. Query it when this
                  * tile first appears or changes to or from a stair. */
-                if (same_level && old != M_VOID && (old == M_STAIRS) == (tile == M_STAIRS)) {
+                if (same_level && old != M_VOID && old < M_ROCK_EDGE &&
+                    (old == M_STAIRS) == (tile == M_STAIRS)) {
                     lift = vox_lift[cy][cx];
                 } else {
                     lift = src->ground(cx, cy);
@@ -737,6 +1089,11 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
 
             if (tile != vox_tile[cy][cx] || light != vox_light[cy][cx] ||
                 lift != vox_lift[cy][cx]) {
+                if (assembling && tile == M_PASSAGE && vox_tile[cy][cx] != M_PASSAGE) {
+                    int x = cx - vox_hero_cx, y = cy - vox_hero_cy;
+                    if (abs(x) <= 1 && abs(y) <= 1 && x * dx + y * dy >= 0)
+                        queue_assembly(cx, cy, tile);
+                }
                 vox_tile[cy][cx] = tile;
                 vox_light[cy][cx] = light;
                 vox_lift[cy][cx] = (uint8_t)lift;
@@ -752,6 +1109,8 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
             }
         }
     }
+
+    if (terrain_changed && has_passages) fringe_passages(under, assembling, assembly_count);
 
     /* Whatever Rogue no longer shows is gone, in pieces if it died. What
      * is still here and has fewer hit points than before was hurt, and
@@ -771,6 +1130,10 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                     defeat_staged = 1;
                 } else {
                     shatter(e, 0);
+                    if (e->kind) {
+                        stain_enemy_floor(e);
+                        terrain_changed = 1;
+                    }
                     vox_events |= VOX_BURST;
                 }
             }
@@ -778,9 +1141,20 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
             continue;
         }
         if (!(e->id & 0x80000000u)) {
-            int hp = src->hp(e->id);
-            if (hp < e->hp && same_level) {
+            int max_hp;
+            int hp = src->hp(e->id, &max_hp);
+            if (e->id == HERO_ID) {
+                int warning = hp > 0 && hp * 20 < max_hp;
+                if (warning != low_hp) {
+                    low_hp = warning;
+                    low_hp_phase = 0;
+                    hero_color_changed = 1;
+                    stale_ent(e);
+                }
+            }
+            if (hp > 0 && hp < e->hp && same_level) {
                 e->flash = FLASH;
+                e->heavy_hit = max_hp > 0 && (e->hp - hp) * 4 >= max_hp;
                 vox_events |= e->id == HERO_ID ? VOX_HURT : VOX_HIT;
                 e->flash_wait = (uint8_t)(e->id == HERO_ID ? 0 : 2);
                 if (e->id == HERO_ID) hero_hit_pending = 1;
@@ -873,7 +1247,7 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
 
     for (int i = 0; i < n_ents && n_in < MAX_COL_ENTS; i++) {
         const ent_t *e = &ents[i];
-        int ex = e->x + e->ox, ey = e->y + e->oy;
+        int ex = e->x + e->ox + recoil_x(e), ey = e->y + e->oy;
         if ((unsigned)(X - ex) >= CELL) continue;
         if (ey - ROW_MIN - ENT_REACH > rb) continue;
 
@@ -886,8 +1260,7 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
         in[k].st = (uint8_t)st;
         in[k].sf = vox_front_shade[st];
         in[k].n = ENT_ROWS;
-        in[k].flash = (e->flash && !e->flash_wait)
-                    ? HIT_FLASH : 0;
+        in[k].flash = (uint8_t)creature_flash(e);
     }
     for (int i = 0; i < n_parts && n_in < MAX_COL_ENTS; i++) {
         const part_t *p = &parts[i];
@@ -900,8 +1273,10 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
         in[k].rows = &p->pixel;
         in[k].near = (int16_t)py;
         in[k].row0 = (int16_t)row;
-        in[k].st = (uint8_t)st;
-        in[k].sf = vox_front_shade[st];
+        unsigned sf = vox_front_shade[st];
+        int dimmed = spatter_dimmed(p);
+        in[k].st = (uint8_t)(st - (st && dimmed));
+        in[k].sf = (uint8_t)(sf - (sf && dimmed));
         in[k].n = 1;
         in[k].flash = 0;
     }
@@ -920,9 +1295,12 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
 
     while (limit > ra && vy >= 0) {
         int cy = vy >> 3;
-        const vcol_t *col = &vox_models[vox_tile[cy][cx]].col[lx][vy & 7];
+        const vmodel_t *model = vox_assembly_model(cx, cy);
+        if (!model) model = &vox_models[vox_tile[cy][cx]];
+        const vcol_t *col = &model->col[lx][vy & 7];
         unsigned st = vox_light[cy][cx];
         unsigned sf = vox_front_shade[st];
+        int stained = vox_stained(cx, cy);
 
         /* The cell's model stands on a plinth `lift` voxels high. */
         int lift = vox_lift[cy][cx];
@@ -944,7 +1322,8 @@ static void render_column(uint16_t *tape, int X, int ra, int rb) {
                     PUT(z < lift ? plinth_side : vox_wtab[col->c[z - lift] + sf]);
                 }
                 if (top < 0) { limit = 0; break; }
-                PUT(col->h ? vox_wtab[col->c[col->h - 1] + st]
+                int painted = stained && col->h == 1 && vox_stain_pixel(lx, vy & 7);
+                PUT(col->h ? vox_wtab[(painted ? vox_blood_material : col->c[col->h - 1]) + st]
                            : (h ? vox_wtab[plinth + st] : 0));
                 limit = top;
             }

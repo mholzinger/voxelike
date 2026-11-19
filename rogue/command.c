@@ -15,6 +15,7 @@
 #include <curses.h>
 #include <ctype.h>
 #include "rogue.h"
+#include "../port/plat.h"
 
 /*
  * command:
@@ -668,6 +669,7 @@ d_level()
 	msg("I see no way down");
     else
     {
+	plat_descend();
 	level++;
 	seenstairs = FALSE;
 	new_level();

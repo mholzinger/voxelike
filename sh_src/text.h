@@ -17,6 +17,7 @@ enum {
     HUD_LIP = 192, HUD_RULE, HUD_MESSAGE, HUD_HEART, HUD_STAIRS, HUD_COIN,
     HUD_STRENGTH, HUD_SHIELD, HUD_STAR, HUD_WARNING, HUD_CURSOR, HUD_BAR,
     HUD_BAR_LOW = HUD_BAR + 9,
+    HUD_BOX_EDGE = HUD_BAR_LOW + 9, HUD_BOX_SIDE, HUD_BOX_CORNER,
 };
 
 void text_begin(void);
@@ -26,6 +27,7 @@ void text_begin(void);
 void text_put(int x, int y, const char *s, int len, uint16_t color, int solid);
 void text_tile(int x, int y, uint16_t tile);
 void text_fill(int x, int y, int width, uint16_t color);
+void text_box_outline(int x, int y, int width, int height);
 void text_commit(void);
 
 #endif

@@ -56,18 +56,32 @@ def read_creatures(path, keys):
             cur = creatures[ch] = {"name": name, "layers": []}
             continue
         parts = line.split()
-        if cur is None or len(parts) not in (2, 3) or any(len(p) != CELL for p in parts):
-            die(f"{path}:{n}: want 8 front characters, 8 side characters and maybe 8 back ones")
-        for c in parts[0] + "".join(parts[2:]):
+        if cur is None or len(parts) not in (2, 3, 4) or any(len(p) != CELL for p in parts):
+            die(f"{path}:{n}: want 8 front, 8 side, optionally 8 back and 8 trim characters")
+        for c in parts[0] + "".join(parts[2:3]):
             if c != "." and c not in keys:
                 die(f"{path}:{n}: no material has key '{c}'")
         if parts[1].strip(".#"):
             die(f"{path}:{n}: side may only hold . and #")
+        if len(parts) == 4 and parts[3].strip("0123"):
+            die(f"{path}:{n}: corner trim must use digits 0–3")
         cur["layers"].append(parts)
     for ch, c in creatures.items():
         if not 0 < len(c["layers"]) <= MAX_LAYERS:
             die(f"{path}: '{ch}' has {len(c['layers'])} layers, limit is {MAX_LAYERS}")
     return creatures
+
+
+def layer_voxel(layer, x, y):
+    front, side = layer[:2]
+    if front[x] == "." or side[y] != "#":
+        return False
+    if len(layer) == 4:
+        trim = int(layer[3][y])
+        left = len(front) - len(front.lstrip("."))
+        right = len(front.rstrip("."))
+        return left + trim <= x < right - trim
+    return True
 
 
 def bake(creature, keys):
@@ -78,8 +92,8 @@ def bake(creature, keys):
     def voxel(x, y, z):
         if not 0 <= z < height:
             return 0
-        front, side = layers[height - 1 - z][:2]
-        return keys[front[x]] if front[x] != "." and side[y] == "#" else 0
+        layer = layers[height - 1 - z]
+        return keys[layer[0][x]] if layer_voxel(layer, x, y) else 0
 
     sprite = [[0] * ROWS for _ in range(CELL)]
     for x in range(CELL):
@@ -110,16 +124,17 @@ def solid(creature, keys, shadow):
         return keys[front[x]] if front[x] != "." else shadow
 
     for z in range(height):
-        front, side = layers[height - 1 - z][:2]
+        layer = layers[height - 1 - z]
+        front = layer[0]
         # The back half of a layer is coloured from the back view, which is
         # drawn as seen from behind and so runs the other way. Without one
         # there is no face to show: it takes the layer's commonest material.
-        back = layers[height - 1 - z][2][::-1] if len(layers[height - 1 - z]) == 3 else None
+        back = layer[2][::-1] if len(layer) >= 3 else None
         used = [c for c in front if c != "."]
         plain = keys[max(set(used), key=used.count)] if used else 0
         for x in range(CELL):
             for y in range(CELL):
-                if front[x] != "." and side[y] == "#":
+                if layer_voxel(layer, x, y):
                     col = cols[x][y]
                     col += [filler(x, k) for k in range(len(col), z)]
                     behind = keys[back[x]] if back and back[x] != "." else plain

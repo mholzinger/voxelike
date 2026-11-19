@@ -9,123 +9,123 @@
 
 # Leather armor
 = 1 body_leather
-..hhhh.. .#####.. ..hhhh..
-.hhhhhh. .#####.. .hhhhhh.
-.sesses. .#####.. .hhhhhh.
-.ssssss. .#####.. .shhhhs.
-LLLLLLLL ..###... LLLLLLLL
-sLLLLLLs ..###... sLLLLLLs
-.LLLLLL. .#####.. .LLLLLL.
-.nnnnnn. .#####.. .nnnnnn.
-.LLLLLL. .#####.. .LLLLLL.
-.GG..GG. ..###... .GG..GG.
-.NN..NN. ..###... .NN..NN.
-.NN..NN. ..####.. .NN..NN.
+..hhhh.. ..####.. ..hhhh.. 00000000
+.hhhhhh. .######. .hhhhhh. 01000010
+.sesses. .######. .hhhhhh. 01000010
+.ssssss. .######. .shhhhs. 01000010
+LLLLLLLL .#####.. LLLLLLLL 01000100
+sLLLLLLs ..####.. sLLLLLLs 00100000
+.LLLLLL. .######. .LLLLLL. 01000010
+.nnnnnn. .#####.. .nnnnnn. 01000100
+.LLLLLL. .######. .LLLLLL. 01000010
+.GG..GG. ..####.. .GG..GG. 00000000
+.NN..NN. ..####.. .NN..NN. 00000000
+.NN..NN. .#####.. .NN..NN. 00000000
 
 # Ring mail: steel rings against a dark backing
 = 2 body_ring
-..hhhh.. .#####.. ..hhhh..
-.hhhhhh. .#####.. .hhhhhh.
-.sesses. .#####.. .hhhhhh.
-.ssssss. .#####.. .shhhhs.
-SwSwSwSw ..###... SwSwSwSw
-swSSwSSs ..###... swSSwSSs
-.SwSwSw. .#####.. .SwSwSw.
-.LLLLLL. .#####.. .LLLLLL.
-.wSSwSS. .#####.. .wSSwSS.
-.GG..GG. ..###... .GG..GG.
-.NN..NN. ..###... .NN..NN.
-.NN..NN. ..####.. .NN..NN.
+..hhhh.. ..####.. ..hhhh.. 00000000
+.hhhhhh. .######. .hhhhhh. 01000010
+.sesses. .######. .hhhhhh. 01000010
+.ssssss. .######. .shhhhs. 01000010
+SwSwSwSw .#####.. SwSwSwSw 01000100
+swSSwSSs ..####.. swSSwSSs 00100000
+.SwSwSw. .######. .SwSwSw. 01000010
+.LLLLLL. .#####.. .LLLLLL. 01000100
+.wSSwSS. .######. .wSSwSS. 01000010
+.GG..GG. ..####.. .GG..GG. 00000000
+.NN..NN. ..####.. .NN..NN. 00000000
+.NN..NN. .#####.. .NN..NN. 00000000
 
 # Plate mail: smooth steel, a visor and gold waist trim
 = 3 body_plate
-..wwww.. .#####.. ..wwww..
-.wwwwww. .#####.. .wwwwww.
-.wesesw. .#####.. .wwwwww.
-.wssssw. .#####.. .wwwwww.
-wwwwwwww ..###... wwwwwwww
-wwwwwwww ..###... wwwwwwww
-.wwwwww. .#####.. .wwwwww.
-.YYYYYY. .#####.. .YYYYYY.
-.wwwwww. .#####.. .wwwwww.
-.ww..ww. ..###... .ww..ww.
-.ww..ww. ..###... .ww..ww.
-.NN..NN. ..####.. .NN..NN.
+..wwww.. ..####.. ..wwww.. 00000000
+.wwwwww. .######. .wwwwww. 01000010
+.wesesw. .######. .wwwwww. 01000010
+.wssssw. .######. .wwwwww. 01000010
+wwwwwwww .#####.. wwwwwwww 01000100
+wwwwwwww ..####.. wwwwwwww 00100000
+.wwwwww. .######. .wwwwww. 01000010
+.YYYYYY. .#####.. .YYYYYY. 01000100
+.wwwwww. .######. .wwwwww. 01000010
+.ww..ww. ..####.. .ww..ww. 00000000
+.ww..ww. ..####.. .ww..ww. 00000000
+.NN..NN. .#####.. .NN..NN. 00000000
 
 # Studded leather: bronze studs over the leather body
 = 4 body_studded
-..hhhh.. .#####.. ..hhhh..
-.hhhhhh. .#####.. .hhhhhh.
-.sesses. .#####.. .hhhhhh.
-.ssssss. .#####.. .shhhhs.
-LynyynyL ..###... LynyynyL
-sLLLLLLs ..###... sLLLLLLs
-.yLLyLy. .#####.. .yLLyLy.
-.nnnnnn. .#####.. .nnnnnn.
-.LynyLL. .#####.. .LynyLL.
-.GG..GG. ..###... .GG..GG.
-.NN..NN. ..###... .NN..NN.
-.NN..NN. ..####.. .NN..NN.
+..hhhh.. ..####.. ..hhhh.. 00000000
+.hhhhhh. .######. .hhhhhh. 01000010
+.sesses. .######. .hhhhhh. 01000010
+.ssssss. .######. .shhhhs. 01000010
+LynyynyL .#####.. LynyynyL 01000100
+sLLLLLLs ..####.. sLLLLLLs 00100000
+.yLLyLy. .######. .yLLyLy. 01000010
+.nnnnnn. .#####.. .nnnnnn. 01000100
+.LynyLL. .######. .LynyLL. 01000010
+.GG..GG. ..####.. .GG..GG. 00000000
+.NN..NN. ..####.. .NN..NN. 00000000
+.NN..NN. .#####.. .NN..NN. 00000000
 
 # Scale mail: overlapping bronze scales with steel shoulders
 = 5 body_scale
-..hhhh.. .#####.. ..hhhh..
-.hhhhhh. .#####.. .hhhhhh.
-.sesses. .#####.. .hhhhhh.
-.ssssss. .#####.. .shhhhs.
-wwnnnnww ..###... wwnnnnww
-synynyns ..###... snynynys
-.nynyny. .#####.. .nynyny.
-.LLLLLL. .#####.. .LLLLLL.
-.ynynyn. .#####.. .ynynyn.
-.GG..GG. ..###... .GG..GG.
-.NN..NN. ..###... .NN..NN.
-.NN..NN. ..####.. .NN..NN.
+..hhhh.. ..####.. ..hhhh.. 00000000
+.hhhhhh. .######. .hhhhhh. 01000010
+.sesses. .######. .hhhhhh. 01000010
+.ssssss. .######. .shhhhs. 01000010
+wwnnnnww .#####.. wwnnnnww 01000100
+synynyns ..####.. snynynys 00100000
+.nynyny. .######. .nynyny. 01000010
+.LLLLLL. .#####.. .LLLLLL. 01000100
+.ynynyn. .######. .ynynyn. 01000010
+.GG..GG. ..####.. .GG..GG. 00000000
+.NN..NN. ..####.. .NN..NN. 00000000
+.NN..NN. .#####.. .NN..NN. 00000000
 
 # Chain mail: a steel coif and a long grey hauberk
 = 6 body_chain
-..SSSS.. .#####.. ..SSSS..
-.SwSwSw. .#####.. .SwSwSw.
-.SesesS. .#####.. .wSwSwS.
-.SssssS. .#####.. .SwSwSw.
-wSwSwSwS ..###... wSwSwSwS
-sSwSwSws ..###... sSwSwSws
-.wSwSwS. .#####.. .wSwSwS.
-.LLLLLL. .#####.. .LLLLLL.
-.wSwSwS. .#####.. .wSwSwS.
-.SwSwSw. ..###... .SwSwSw.
-.NN..NN. ..###... .NN..NN.
-.NN..NN. ..####.. .NN..NN.
+..SSSS.. ..####.. ..SSSS.. 00000000
+.SwSwSw. .######. .SwSwSw. 01000010
+.SesesS. .######. .wSwSwS. 01000010
+.SssssS. .######. .SwSwSw. 01000010
+wSwSwSwS .#####.. wSwSwSwS 01000100
+sSwSwSws ..####.. sSwSwSws 00100000
+.wSwSwS. .######. .wSwSwS. 01000010
+.LLLLLL. .#####.. .LLLLLL. 01000100
+.wSwSwS. .######. .wSwSwS. 01000010
+.SwSwSw. ..####.. .SwSwSw. 00000000
+.NN..NN. ..####.. .NN..NN. 00000000
+.NN..NN. .#####.. .NN..NN. 00000000
 
 # Splint mail: pale steel strips on brown leather and an open cap
 = 7 body_splint
-..wwww.. .#####.. ..wwww..
-.SSwwSS. .#####.. .SSwwSS.
-.SesesS. .#####.. .SSwwSS.
-.LssssL. .#####.. .SSwwSS.
-wLwLLwLw ..###... wLwLLwLw
-swLwLwLs ..###... swLwLwLs
-.wLwwLw. .#####.. .wLwwLw.
-.LLLLLL. .#####.. .LLLLLL.
-.wLwwLw. .#####.. .wLwwLw.
-.wL..Lw. ..###... .wL..Lw.
-.LL..LL. ..###... .LL..LL.
-.NN..NN. ..####.. .NN..NN.
+..wwww.. ..####.. ..wwww.. 00000000
+.SSwwSS. .######. .SSwwSS. 01000010
+.SesesS. .######. .SSwwSS. 01000010
+.LssssL. .######. .SSwwSS. 01000010
+wLwLLwLw .#####.. wLwLLwLw 01000100
+swLwLwLs ..####.. swLwLwLs 00100000
+.wLwwLw. .######. .wLwwLw. 01000010
+.LLLLLL. .#####.. .LLLLLL. 01000100
+.wLwwLw. .######. .wLwwLw. 01000010
+.wL..Lw. ..####.. .wL..Lw. 00000000
+.LL..LL. ..####.. .LL..LL. 00000000
+.NN..NN. .#####.. .NN..NN. 00000000
 
 # Banded mail: dark seams between broad blue steel bands
 = 8 body_banded
-..SSSS.. .#####.. ..SSSS..
-.SwwwwS. .#####.. .SwwwwS.
-.WesesW. .#####.. .SSSSSS.
-.WssssW. .#####.. .SwwwwS.
-wSSSSSSw ..###... wSSSSSSw
-SwwwwwwS ..###... SwwwwwwS
-.SSSSSS. .#####.. .SSSSSS.
-.LLLLLL. .#####.. .LLLLLL.
-.wwwwww. .#####.. .wwwwww.
-.SS..SS. ..###... .SS..SS.
-.ww..ww. ..###... .ww..ww.
-.NN..NN. ..####.. .NN..NN.
+..SSSS.. ..####.. ..SSSS.. 00000000
+.SwwwwS. .######. .SwwwwS. 01000010
+.WesesW. .######. .SSSSSS. 01000010
+.WssssW. .######. .SwwwwS. 01000010
+wSSSSSSw .#####.. wSSSSSSw 01000100
+SwwwwwwS ..####.. SwwwwwwS 00100000
+.SSSSSS. .######. .SSSSSS. 01000010
+.LLLLLL. .#####.. .LLLLLL. 01000100
+.wwwwww. .######. .wwwwww. 01000010
+.SS..SS. ..####.. .SS..SS. 00000000
+.ww..ww. ..####.. .ww..ww. 00000000
+.NN..NN. .#####.. .NN..NN. 00000000
 
 # A wooden haft from the floor, and a steel head above the shoulder.
 = m mace

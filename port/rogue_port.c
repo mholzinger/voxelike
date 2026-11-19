@@ -269,11 +269,12 @@ rogue_alive(unsigned long who)
  *	Hit points of a monster that is alive, or of the player for 1.
  */
 int
-rogue_hp(unsigned long who)
+rogue_hp(unsigned long who, int *maximum)
 {
-    if (who == 1)
-	return pstats.s_hpt;
-    return rogue_alive(who) ? ((THING *) who)->t_stats.s_hpt : 0;
+    const struct stats *stats = who == 1 ? &pstats :
+        rogue_alive(who) ? &((THING *) who)->t_stats : NULL;
+    *maximum = stats ? stats->s_maxhp : 0;
+    return stats ? stats->s_hpt : 0;
 }
 
 int
@@ -480,7 +481,7 @@ fits(THING *obj)
 /*
  * rogue_pack:
  *	Describe the index'th thing in the pack that fits what Rogue is
- *	asking for as "a) name", at most max characters. Returns its pack
+ *	asking for, at most max characters. Returns its pack
  *	letter, or 0 past the end.
  */
 int
@@ -493,8 +494,45 @@ rogue_pack(int index, char *buf, int max)
 	    break;
     if (obj == NULL)
 	return 0;
-    sprintf(buf, "%c) %.*s", obj->o_packch, max - 3, inv_name(obj, FALSE));
+    if (pick_type == SCROLL)
+    {
+	const struct obj_info *info = &scr_info[obj->o_which];
+	const char *name = info->oi_know ? info->oi_name :
+	    info->oi_guess ? info->oi_guess : s_names[obj->o_which];
+	int prefix = 0;
+	if (obj->o_count > 1)
+	    prefix += sprintf(buf + prefix, "%dx ", obj->o_count);
+	const char *label = info->oi_know ? "of " : info->oi_guess ? "called " : "";
+	sprintf(buf + prefix, "%s%.*s", label, max - prefix - (int)strlen(label), name);
+	return obj->o_packch;
+    }
+    sprintf(buf, "%.*s", max, inv_name(obj, FALSE));
     return obj->o_packch;
+}
+
+/* The controller shortcut for a freshly picked up pack item. */
+int
+rogue_pickup_command(int slot)
+{
+    THING *obj;
+
+    for (obj = pack; obj != NULL; obj = next(obj))
+    {
+	if (obj->o_packch != slot)
+	    continue;
+	switch (obj->o_type)
+	{
+	    case FOOD: return 'e';
+	    case POTION: return 'q';
+	    case SCROLL: return 'r';
+	    case WEAPON: return 'w';
+	    case ARMOR: return 'W';
+	    case RING: return 'P';
+	    case STICK: return 'z';
+	    default: return 0;
+	}
+    }
+    return 0;
 }
 
 /*

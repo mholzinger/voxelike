@@ -55,4 +55,12 @@ hud_tiles:
 	.irp fill, 0,1,2,3,4,5,6,7,8
 	health \fill, 5
 	.endr
+	/* Dialogue frame. Flip the left edge and top corner for other sides. */
+	.long 0x77777777, 0x33333333, 0x22222222, 0x22222222
+	.long 0x22222222, 0x22222222, 0x22222222, 0x22222222
+	.rept 8
+	.long 0x73222222
+	.endr
+	.long 0x77777777, 0x73333333, 0x73222222, 0x73222222
+	.long 0x73222222, 0x73222222, 0x73222222, 0x73222222
 hud_tiles_end:

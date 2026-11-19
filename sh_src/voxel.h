@@ -58,7 +58,7 @@ typedef struct {
     vox_under_fn under;
     vox_who_fn who;
     int (*alive)(uint32_t id);   /* is this creature still in the level */
-    int (*hp)(uint32_t id);      /* hit points of a living creature, 1 for the hero */
+    int (*hp)(uint32_t id, int *maximum);      /* hit points of a living creature, 1 for the hero */
     int (*ground)(int cx, int cy);   /* how high the cell's ground stands, in voxels */
 } vox_source_t;
 
@@ -78,7 +78,7 @@ int vox_defeat_target(int *x, int *y);
 void vox_defeat_flash(void);
 void vox_release_defeat(void);
 
-/* Camera target for a landed melee hit while the opponent is nearby. */
+/* Camera target for an opponent on a neighboring tile. */
 int vox_duel_target(int *x, int *y);
 
 /* A creature struck at the hero: have it jab that way, a moment from now. */
@@ -94,8 +94,11 @@ void vox_hero_lunge(int dx, int dy);
 /* Clear or start the hero's hit flash. */
 void vox_hero_hit_flash(int on);
 
-/* Shed model-coloured chunks and a separate spray. A flat build uses the
- * hero sprite in place of the equipped 3D model. */
+/* Spray red fragments while the hero is still standing. */
+void vox_hero_spatter(void);
+
+/* Shed model-coloured chunks. A flat build uses the hero sprite in place
+ * of the equipped 3D model. */
 void vox_hero_shatter(const vcol_t model[CELL][CELL]);
 
 /* Bring the framebuffer that is about to be shown up to date for a camera

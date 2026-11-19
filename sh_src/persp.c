@@ -83,6 +83,7 @@ typedef uint32_t __attribute__((may_alias)) quad_t;
 /* The colour on top of each column of a model, 64 bytes where the model
  * itself spreads them over a kilobyte. */
 static uint8_t tops[VOX_MODELS_MAX][CELL * CELL];
+static uint8_t stained_tops[VOX_MODELS_MAX][CELL * CELL];
 
 /* All a ray needs to know about a cell, in one cache line. */
 typedef struct {
@@ -94,7 +95,8 @@ typedef struct {
                             * it goes, before it needs to look again */
     uint8_t lift;
     uint8_t plinth;
-    uint8_t pad[4];
+    uint8_t stain;
+    uint8_t pad[3];
 } pcell_t;
 
 typedef char pcell_is_a_line[sizeof(pcell_t) == 16 ? 1 : -1];
@@ -105,6 +107,7 @@ static pcell_t cells[MAP_H][MAP_W];
 static vmodel_t bump[MAX_BUMPS];
 static struct { uint8_t cx, cy; } bumped[MAX_BUMPS];
 static int n_bumped;
+static int arrival_altitude;
 static uint8_t model_flat[VOX_MODELS_MAX];
 
 static unsigned flatness(const vmodel_t *m);
@@ -115,6 +118,8 @@ void persp_init(void) {
         for (int i = 0; i < CELL * CELL; i++) {
             const vcol_t *c = &vox_models[m].col[i >> 3][i & 7];
             tops[m][i] = c->h ? c->c[c->h - 1] : 0;
+            stained_tops[m][i] = c->h == 1 && vox_stain_pixel(i >> 3, i & 7)
+                               ? vox_blood_material : tops[m][i];
         }
     }
 
@@ -138,9 +143,11 @@ static void terrain(int cx, int cy) {
     unsigned tile = vox_tile[cy][cx];
     unsigned h = model_flat[tile];
 
-    pc->m = &vox_models[tile];
-    pc->top = tops[tile];
-    pc->flat = (uint8_t)(h == DETAIL ? DETAIL : h + vox_lift[cy][cx]);
+    const vmodel_t *partial = vox_assembly_model(cx, cy);
+    pc->m = partial ? partial : &vox_models[tile];
+    pc->stain = (uint8_t)vox_stained(cx, cy);
+    pc->top = pc->stain ? stained_tops[tile] : tops[tile];
+    pc->flat = (uint8_t)(partial || h == DETAIL ? DETAIL : h + vox_lift[cy][cx]);
     pc->lift = vox_lift[cy][cx];
     pc->plinth = vox_plinth[tile];
     if (pc->flat) pc->light = vox_light[cy][cx];
@@ -164,7 +171,7 @@ void persp_sync(int terrain_changed) {
                 unsigned lift = vox_lift[cy][cx];
                 unsigned light = vox_light[cy][cx];
                 if (pc->m == &vox_models[tile] && pc->lift == lift &&
-                    (!pc->flat || pc->light == light)) continue;
+                    pc->stain == vox_stained(cx, cy) && (!pc->flat || pc->light == light)) continue;
                 int was_empty = pc->flat == 0;
                 terrain(cx, cy);
                 if (was_empty != (pc->flat == 0)) rebuild_runs = 1;
@@ -226,7 +233,7 @@ static vmodel_t *bump_for(int cx, int cy) {
     bumped[n_bumped].cx = (uint8_t)cx;
     bumped[n_bumped].cy = (uint8_t)cy;
     n_bumped++;
-    *m = vox_models[vox_tile[cy][cx]];
+    *m = *cells[cy][cx].m;
     cells[cy][cx].m = m;
     cells[cy][cx].flat = DETAIL;
     return m;
@@ -234,7 +241,7 @@ static vmodel_t *bump_for(int cx, int cy) {
 
 /* The hero as he is dressed and armed: the body his armour gives him, and
  * his weapon added wherever it stands clear of that. By Rogue's numbers. */
-static const vcol_t (*hero_dressed(void))[CELL] {
+static const vcol_t (*hero_dressed(unsigned attack))[CELL] {
     static const uint8_t body_of[8] = {
         GEAR_BODY_LEATHER, GEAR_BODY_RING, GEAR_BODY_STUDDED, GEAR_BODY_SCALE,
         GEAR_BODY_CHAIN, GEAR_BODY_SPLINT, GEAR_BODY_BANDED, GEAR_BODY_PLATE,
@@ -245,20 +252,39 @@ static const vcol_t (*hero_dressed(void))[CELL] {
     };
     static vcol_t made[CELL][CELL];
     static int armor = -2, weapon = -2;
+    static const vox_attack_pose_t *last_pose;
+    const vox_attack_pose_t *pose = vox_attack_pose(vox_hero_weapon, attack);
 
-    if (armor == vox_hero_armor && weapon == vox_hero_weapon) return (const vcol_t (*)[CELL])made;
+    if (armor == vox_hero_armor && weapon == vox_hero_weapon && pose == last_pose)
+        return (const vcol_t (*)[CELL])made;
     armor = vox_hero_armor;
     weapon = vox_hero_weapon;
+    last_pose = pose;
     const vcol_t (*body)[CELL] = (unsigned)armor < 8 ? gear_solid[body_of[armor]] : ent_solid[0];
     const vcol_t (*held)[CELL] = (unsigned)weapon < 9 ? gear_solid[held_of[weapon]] : 0;
-    for (int x = 0; x < CELL; x++) {
-        for (int y = 0; y < CELL; y++) {
-            vcol_t *dst = &made[x][y];
-            *dst = body[x][y];
-            if (!held) continue;
-            while (dst->h < held[x][y].h) {
-                dst->c[dst->h] = held[x][y].c[dst->h];
-                dst->h++;
+    memcpy(made, body, sizeof made);
+    if (held) {
+        for (int x = 0; x < CELL; x++) {
+            for (int y = 0; y < CELL; y++) {
+                const vcol_t *weapon_col = &held[x][y];
+                for (int z = 0; z < weapon_col->h; z++) {
+                    int px = x, py = y, pz = z;
+                    unsigned material = weapon_col->c[z];
+                    if (pose) {
+                        if (material == vox_shadow_material) continue;
+                        int shaft = z - 5;
+                        int tilt = pose->tilt < 0 ? -pose->tilt : pose->tilt;
+                        px += pose->across;
+                        py += pose->forward + shaft * pose->tilt / 4;
+                        pz += pose->lift - shaft * tilt / 6;
+                        if (px < 0 || px >= CELL || pz < 0 || pz >= COL_MAXH) continue;
+                        py = py < 0 ? 0 : py >= CELL ? CELL - 1 : py;
+                    }
+                    if (pz < body[px][py].h) continue;
+                    vcol_t *dst = &made[px][py];
+                    while (dst->h <= pz) dst->c[dst->h++] = vox_shadow_material;
+                    dst->c[pz] = (uint8_t)material;
+                }
             }
         }
     }
@@ -266,11 +292,11 @@ static const vcol_t (*hero_dressed(void))[CELL] {
 }
 
 void persp_hero_shatter(void) {
-    vox_hero_shatter(hero_dressed());
+    vox_hero_shatter(hero_dressed(0));
 }
 
 int persp_hero_height(void) {
-    const vcol_t (*model)[CELL] = hero_dressed();
+    const vcol_t (*model)[CELL] = hero_dressed(0);
     int height = 0;
     for (int x = 0; x < CELL; x++)
         for (int y = 0; y < CELL; y++)
@@ -281,15 +307,22 @@ int persp_hero_height(void) {
 /* Stand every creature where it is this frame. A creature is 8x8 columns
  * of voxels, turned to face the way it last moved; walking between cells
  * it stands partly on each. */
-void persp_creatures(int hero_buried) {
+static void place_creatures(int hero_buried, int stair, int offset, int hop) {
     vox_creature_t c;
 
     while (n_bumped > 0) {
         n_bumped--;
         terrain(bumped[n_bumped].cx, bumped[n_bumped].cy);
     }
+    for (int i = 0, cx, cy; vox_assembly_cell(i, &cx, &cy); i++)
+        terrain(cx, cy);
     for (int i = 0; vox_creature(i, &c); i++) {
-        const vcol_t (*model)[CELL] = c.kind ? ent_solid[c.kind] : hero_dressed();
+        if (stair && !c.kind) {
+            c.x += offset;
+            c.z = hop;
+            c.face = 3;   /* the stair treads descend along positive X */
+        }
+        const vcol_t (*model)[CELL] = c.kind ? ent_solid[c.kind] : hero_dressed(c.attack);
         for (int fx = 0; fx < CELL; fx++) {
             for (int fy = 0; fy < CELL; fy++) {
                 const vcol_t *src = vox_model_column(model, c.face, fx, fy);
@@ -308,6 +341,40 @@ void persp_creatures(int hero_buried) {
                     dst->c[dst->h++] = c.flash ? (uint8_t)(c.flash & ~7) : src->c[z];
                 }
             }
+        }
+    }
+}
+
+void persp_creatures(int hero_buried) {
+    place_creatures(hero_buried, 0, 0, 0);
+}
+
+void persp_stair_hop(int hero_buried, int offset, int hop) {
+    place_creatures(hero_buried, 1, offset, hop);
+}
+
+void persp_arrival_hero(int altitude) {
+    arrival_altitude = altitude > 0 ? altitude : 0;
+    persp_creatures(altitude ? persp_hero_height() : 0);
+}
+
+void persp_death_pool(int cx, int cy, unsigned age) {
+    vmodel_t *model = bump_for(cx, cy);
+    if (!model) return;
+    const vmodel_t *floor = &vox_models[vox_tile[cy][cx]];
+    unsigned height = floor->col[CELL / 2][CELL / 2].h;
+    if (!height || height > 3) return;
+
+    /* Grow in voxel-sized steps, with a slightly uneven edge. Recolour
+     * the floor itself so bodies, debris and walls keep their depth. */
+    unsigned spread = 1 + age / 4;
+    if (spread > 9) spread = 9;
+    for (int x = 1; x < CELL - 1; x++) {
+        for (int y = 1; y < CELL - 1; y++) {
+            int dx = x - CELL / 2, dy = y - CELL / 2;
+            unsigned distance = (unsigned)(dx * dx + dy * dy + ((x + 2 * y) & 1));
+            if (distance <= spread && floor->col[x][y].h == height)
+                model->col[x][y].c[height - 1] = vox_blood_material;
         }
     }
 }
@@ -432,7 +499,8 @@ int walk(walk_t *w, const int WIDE, const int YS) {
             int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
             if (top < YEND) top = YEND;
             if (top < ybuf) {
-                uint16_t pix = col->h ? vox_wtab[col->c[col->h - 1] + st]
+                int painted = pc->stain && col->h == 1 && vox_stain_pixel(ix & 7, iy & 7);
+                uint16_t pix = col->h ? vox_wtab[(painted ? vox_blood_material : col->c[col->h - 1]) + st]
                                       : (h ? vox_wtab[plinth + st] : BLACK);
                 ROWS(top, p = pix);
                 if (ybuf == YEND) { done = 1; break; }
@@ -731,6 +799,56 @@ static void pieces(void) {
     }
 }
 
+/* During the drop, project the dressed model over the room. The ordinary
+ * heightfield cannot leave air between a model and its floor. */
+static void arrival_hero(void) {
+    vox_creature_t hero;
+    for (int i = 0; ; i++) {
+        if (!vox_creature(i, &hero)) return;
+        if (!hero.kind) break;
+    }
+    const vcol_t (*model)[CELL] = hero_dressed(0);
+    int ground = vox_height_at(vox_hero_cx, vox_hero_cy);
+    int fine_x = job.cols > VIEW_W, fine_y = job.rows > VIEW_H;
+    uint8_t *pixels = (uint8_t *)(job.fb + FB_PIXELS);
+    for (int ix = 0; ix < CELL; ix++) {
+        int x = job.c >= 0 ? CELL - 1 - ix : ix;
+        for (int iy = 0; iy < CELL; iy++) {
+            int y = job.s >= 0 ? CELL - 1 - iy : iy;
+            const vcol_t *col = vox_model_column(model, hero.face, x, y);
+            if (!col->h) continue;
+            int32_t rx = ((hero.x + x) << 16) + 0x8000 - job.ex;
+            int32_t ry = ((hero.y + y) << 16) + 0x8000 - job.ey;
+            int32_t t = sh2z_mul(rx, job.c) + sh2z_mul(ry, job.s);
+            int32_t u = sh2z_mul(ry, job.c) - sh2z_mul(rx, job.s);
+            if (t < job.t_near || t > job.t_far) continue;
+            int scale = (int)(inv_t[(t - job.t_near) >> INV_STEP] >> 4);
+            int width = ((scale << fine_x) + 4095) >> 12;
+            int rows = ((scale << fine_y) + 4095) >> 12;
+            int left = job.cols / 2 + (((u >> 8) * scale) >> (20 - fine_x)) - width / 2;
+            int right = left + width;
+            if (left < 0) left = 0;
+            if (right > job.cols) right = job.cols;
+            for (int z = 0; z < col->h; z++) {
+                int altitude = ground + arrival_altitude + z + 1;
+                int top = (job.horizon << fine_y) +
+                          (((job.eye_h - altitude) * scale) >> (12 - fine_y));
+                int bottom = top + rows;
+                if (top < 0) top = 0;
+                if (bottom > job.rows) bottom = job.rows;
+                for (int row = top; row < bottom; row++) {
+                    uint8_t colour = col->c[z] + (row == top ? 7 : 5);
+                    uint8_t *at = pixels + row * STRIDE;
+                    for (int sx = left; sx < right; sx++) {
+                        if (fine_x) at[sx] = colour;
+                        else ((pair_t *)at)[sx] = vox_wtab[colour];
+                    }
+                }
+            }
+        }
+    }
+}
+
 /* Set the lens: flat is 0 for full perspective to 256 for none, pull 0
  * close in to 256 pulled back. The eye is always as high as it is far
  * back, which keeps the hero on the same row and the ground as deep on
@@ -817,6 +935,7 @@ void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, 
     columns(0);
     while (MARS_SYS_COMM6 == SECONDARY_GO);
     pieces();
+    if (arrival_altitude) arrival_hero();
 
     /* Two line offsets per aligned longword. The 112-row modes map
      * consecutive scanlines to the same source row. */

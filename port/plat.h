@@ -5,6 +5,7 @@
 unsigned long plat_ticks(void);        /* vblanks since power on */
 int           plat_getkey(void);       /* block until the player gives a command */
 void          plat_exit(int status);   /* the game is over */
+void          plat_descend(void);      /* a valid stair descent is about to generate a floor */
 
 /* A curses window was refreshed. cells is lines * cols characters, bit 7
  * set on standout ones. main_screen is nonzero for Rogue's 80x24 screen. */
@@ -17,7 +18,7 @@ const unsigned char *rogue_screen(void);   /* the 80x24 screen's cells */
 int  rogue_under(int x, int y);            /* level character at a screen cell */
 unsigned long rogue_who(int x, int y);     /* the monster at a screen cell, or 0 */
 int  rogue_alive(unsigned long who);       /* is that monster still in the level */
-int  rogue_hp(unsigned long who);          /* its hit points; 1 asks for the player's */
+int  rogue_hp(unsigned long who, int *maximum);          /* its hit points; 1 asks for the player's */
 int  rogue_depth(void);                    /* dungeon level */
 int  rogue_room_id(void);                  /* which room the player is in, -1 in the passages */
 void rogue_tally(int *gold, int *things, int *rank);   /* purse, pack count, experience level */
@@ -35,6 +36,7 @@ typedef struct {
     int depth, gold, hp, hp_max, strength, armor, rank, experience, hunger;
 } rogue_status_t;
 void rogue_status(rogue_status_t *status);
-int  rogue_pack(int index, char *buf, int max);   /* "a) name" of the index'th thing that fits what is asked for; returns the letter or 0 */
+int  rogue_pack(int index, char *buf, int max);   /* Name of the index'th matching item. Returns its pack letter or 0. */
+int  rogue_pickup_command(int slot);       /* controller shortcut, or 0 */
 
 #endif
