@@ -15,6 +15,7 @@
 #include <string.h>
 #include <ctype.h>
 #include "rogue.h"
+#include "../port/plat.h"
 
 #define	EQSTR(a, b)	(strcmp(a, b) == 0)
 
@@ -630,6 +631,7 @@ killed(THING *tp, bool pr)
 {
     char *mname;
 
+    plat_record_kill(tp->t_type);
     pstats.s_exp += tp->t_stats.s_exp;
 
     /*

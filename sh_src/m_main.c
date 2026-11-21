@@ -91,15 +91,56 @@ static int cam_flat;       /* 0 full perspective .. 256 none */
 int cam_res = PERSP_RES;   /* PERSP_RES_x; make RES=n picks the one to start in */
 uint32_t cam_res_at;       /* vblank it was last changed on, 0 for never */
 static int flat_wanted;
+static int fixed_camera = PERSP == 1;
+static int fixed_close;
 static int duel_mix, duel_x, duel_y;
+static int duel_yaw_offset, duel_manual;
+static uint16_t duel_shot_yaw;
+static uint32_t duel_target_id;
+static int quarter_remaining;
+static uint16_t quarter_buttons;
+
+static void camera_quarter_turn(int steps) {
+	uint16_t buttons = MARS_SYS_COMM8 & (SEGA_CTRL_X | SEGA_CTRL_Z);
+	uint16_t pressed = buttons & ~quarter_buttons;
+	quarter_buttons = buttons;
+	if(pressed && duel_target_id && !duel_manual) {
+		/* Start a manual quarter-turn from the visible combat angle. */
+		persp_yaw += duel_yaw_offset;
+		duel_yaw_offset = 0;
+		duel_manual = 1;
+	}
+	if(pressed & SEGA_CTRL_X) quarter_remaining -= 0x4000;
+	if(pressed & SEGA_CTRL_Z) quarter_remaining += 0x4000;
+
+	/* Keep the sign of queued turns, including two turns in one direction. */
+	int limit = steps * 0x400;
+	int swing = clamp(quarter_remaining, -limit, limit);
+	persp_yaw += swing;
+	quarter_remaining -= swing;
+	camera_yaw_settled = quarter_remaining == 0;
+}
+
+static int ease_mix(int p) {
+	return ((p * p >> 8) * (768 - 2 * p)) >> 8;
+}
+
+static int duel_weight(void) {
+	return fixed_camera ? ease_mix(duel_mix) : duel_mix;
+}
+
+uint16_t game_input_yaw(void) {
+	return (uint16_t)(persp_yaw + duel_yaw_offset);
+}
 
 static int duel_pull(int pull) {
-	return pull + (FIGHT_PULL - pull) * duel_mix / 256;
+	return pull + (FIGHT_PULL - pull) * duel_weight() / 256;
 }
 
 static void duel_centre(int *x, int *y) {
-	*x += (duel_x - *x) * duel_mix / 512;
-	*y += (duel_y - *y) * duel_mix / 512;
+	int mix = duel_weight();
+	*x += (duel_x - *x) * mix / 512;
+	*y += (duel_y - *y) * mix / 512;
 }
 
 
@@ -163,7 +204,7 @@ static uint16_t best_view(uint16_t first, int count, int step) {
 	return best_yaw;
 }
 
-static void camera_buttons(void) {
+static void camera_buttons(int reset) {
 	static const uint16_t behind[4] = { 0x4000, 0x8000, NORTH, 0x0000 };
 	static uint16_t prev, target;
 	static uint32_t y_since, tapped_at, mode_since, hands_at;
@@ -173,6 +214,16 @@ static void camera_buttons(void) {
 
 	static uint32_t pushed_at;
 	static int recovery_x, recovery_y, recovery_depth;
+	if(reset) {
+		prev = pad;
+		target = persp_yaw;
+		y_since = mode_since = now;
+		tapped_at = pushed_at = 0;
+		hands_at = now ? now : 1;
+		swinging = tapped = tipped = gently = 0;
+		recovery_depth = 0;
+		return;
+	}
 	int direction = pad & (SEGA_CTRL_UP | SEGA_CTRL_DOWN | SEGA_CTRL_LEFT | SEGA_CTRL_RIGHT);
 	int manual = pad & (SEGA_CTRL_X | SEGA_CTRL_Y | SEGA_CTRL_Z);
 	if(direction) pushed_at = now ? now : 1;
@@ -250,6 +301,23 @@ static void camera_buttons(void) {
 	cam_flat = clamp(cam_flat + (flat_wanted ? TIP : -TIP), 0, 256);
 	cam_pull = clamp(cam_pull + (pulling ? 24 : -24), 0, 256);
 }
+
+int game_camera_fixed(void) {
+	return fixed_camera;
+}
+
+void game_toggle_camera(void) {
+	persp_yaw = game_input_yaw();
+	fixed_camera = !fixed_camera;
+	fixed_close = quarter_remaining = 0;
+	quarter_buttons = MARS_SYS_COMM8 & (SEGA_CTRL_X | SEGA_CTRL_Z);
+	duel_mix = duel_yaw_offset = duel_manual = 0;
+	duel_target_id = 0;
+	cam_flat = cam_pull = flat_wanted = 0;
+	camera_yaw_settled = 1;
+	camera_buttons(1);
+	cam_snap = 1;
+}
 #endif
 
 /* Close a quarter of the distance each frame, at least one fat pixel and
@@ -312,24 +380,36 @@ static int update_hero_gear(void) {
 	return dressed;
 }
 
-/* Favor a three-quarter side view with both fighters clear of walls. */
-static uint16_t defeat_yaw(int x, int y, int dx, int dy) {
-	uint16_t best_yaw = persp_yaw;
+enum fight_angle { FIGHT_SIDE, BEHIND_ENEMY, BEHIND_HERO };
+
+static enum fight_angle matchup(uint32_t id) {
+	int hero = rogue_combat_rank(1);
+	int enemy = rogue_combat_rank(id);
+	if(enemy >= 2 * hero) return FIGHT_SIDE;
+	if(enemy && 2 * enemy <= hero) return BEHIND_HERO;
+	return BEHIND_ENEMY;
+}
+
+/* Aim over one fighter's shoulder, or cross the line of attack for a
+ * boss. Prefer the shoulder that leaves both fighters clear of walls. */
+static uint16_t fight_yaw(int x, int y, int dx, int dy, enum fight_angle angle,
+                          uint16_t from, unsigned increment) {
+	uint16_t best_yaw = from;
 	int best = INT32_MAX;
-	int span = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+	int ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+	int span = ax + ay;
 	if(!span) return best_yaw;
-	for(unsigned i = 0; i < 16; i++) {
-		uint16_t yaw = (uint16_t)(i * 0x1000);
+	int length = ax > ay ? ax + 3 * ay / 8 : ay + 3 * ax / 8;
+	int depth_goal = angle == FIGHT_SIDE ? 0 : (angle == BEHIND_HERO ? 196 : -196) * length;
+	for(unsigned i = 0; i < 0x10000; i += increment) {
+		uint16_t yaw = (uint16_t)i;
 		sh2z_fx_t sin, cos;
 		sh2z_sincos(yaw, &sin, &cos);
 		int depth = (dx * cos + dy * sin) >> 8;
-		if(depth < 0) depth = -depth;
-		int swing = (int16_t)(yaw - persp_yaw);
+		int swing = (int16_t)(yaw - from);
 		if(swing < 0) swing = -swing;
 		int cover = hidden_from(yaw) + hidden_at(x / CELL, y / CELL, yaw);
-		/* A 22.5-degree offset from broadside shows depth and the gap
-		 * between the fighters. A clear view matters more than the angle. */
-		int profile = depth / span - 98;
+		int profile = (depth - depth_goal) / span;
 		if(profile < 0) profile = -profile;
 		int score = cover * 1024 + profile * 3 + (swing >> 8);
 		if(score < best) {
@@ -340,13 +420,51 @@ static uint16_t defeat_yaw(int x, int y, int dx, int dy) {
 	return best_yaw;
 }
 
+static void update_duel(int steps, int suppressed) {
+	vox_duel_t shot;
+	if(suppressed) {
+		duel_mix = duel_yaw_offset = duel_manual = 0;
+		duel_target_id = 0;
+		return;
+	}
+	if(vox_duel_target(&shot)) {
+		if(shot.id != duel_target_id) {
+			duel_manual = 0;
+			if(fixed_camera)
+				duel_shot_yaw = fight_yaw(shot.x, shot.y, shot.dx * CELL, shot.dy * CELL,
+				                          matchup(shot.id), game_input_yaw(), 0x4000);
+		}
+		duel_target_id = shot.id;
+		duel_x = shot.x;
+		duel_y = shot.y;
+		duel_mix = clamp(duel_mix + steps * (fixed_camera ? 48 : 32), 0, 256);
+	} else {
+		duel_mix = clamp(duel_mix - steps * 32, 0, 256);
+		if(!duel_mix) {
+			duel_target_id = 0;
+			duel_manual = 0;
+		}
+	}
+	if(fixed_camera) {
+		uint16_t target = persp_yaw;
+		if(!duel_manual)
+			target += (int16_t)(duel_shot_yaw - persp_yaw) * duel_weight() / 256;
+		int turn = (int16_t)(target - game_input_yaw());
+		int limit = steps * 0x400;
+		duel_yaw_offset = (int16_t)(duel_yaw_offset + clamp(turn, -limit, limit));
+	}
+}
+
 /* Use a private camera angle and return to the gameplay view before
  * reading the next command. Rogue has already resolved the killing hit. */
 static void play_defeat(int enemy_x, int enemy_y) {
 	enum { APPROACH = 15, FLASH_AT = 17, IMPACT = 27, RETREAT = 46, END = 62 };
 	int hx = vox_hero_x + CELL / 2, hy = vox_hero_y + CELL / 2;
 	int dx = enemy_x - hx, dy = enemy_y - hy;
-	int swing = (int16_t)(defeat_yaw(enemy_x, enemy_y, dx, dy) - persp_yaw);
+	uint16_t from_yaw = game_input_yaw();
+	uint16_t victory_yaw = fight_yaw(enemy_x, enemy_y, dx, dy, BEHIND_HERO, from_yaw, 0x1000);
+	int swing_in = (int16_t)(victory_yaw - from_yaw);
+	int swing_out = (int16_t)(persp_yaw - victory_yaw);
 	int from_x = hx, from_y = hy;
 	duel_centre(&from_x, &from_y);
 	int from_pull = duel_pull(NORMAL_PULL);
@@ -373,9 +491,11 @@ static void play_defeat(int enemy_x, int enemy_y) {
 		int p = clamp(t, 0, APPROACH) * 256 / APPROACH
 		      - clamp(t - RETREAT, 0, END - RETREAT) * 256 / (END - RETREAT);
 		int eased = ((p * p >> 8) * (768 - 2 * p)) >> 8;
-		uint16_t yaw = (uint16_t)(persp_yaw + swing * eased / 256);
 		int approach = clamp(t, 0, APPROACH) * 256 / APPROACH;
-		int remaining = 256 - (((approach * approach >> 8) * (768 - 2 * approach)) >> 8);
+		int remaining = 256 - ease_mix(approach);
+		int retreat = ease_mix(clamp(t - RETREAT, 0, END - RETREAT) * 256 / (END - RETREAT));
+		uint16_t yaw = (uint16_t)(from_yaw + swing_in * (256 - remaining) / 256 +
+		                          swing_out * retreat / 256);
 		int x = hx + dx * eased / 512 + (from_x - hx) * remaining / 256;
 		int y = hy + dy * eased / 512 + (from_y - hy) * remaining / 256;
 		int pull = NORMAL_PULL + (FIGHT_PULL - NORMAL_PULL) * eased / 256 +
@@ -386,7 +506,8 @@ static void play_defeat(int enemy_x, int enemy_y) {
 		previous = t;
 	}
 	anim_tick = MARS_SYS_COMM12;
-	duel_mix = 0;
+	duel_mix = duel_yaw_offset = duel_manual = 0;
+	duel_target_id = 0;
 }
 
 #endif
@@ -397,7 +518,8 @@ static void play_defeat(int enemy_x, int enemy_y) {
 void game_frame(void) {
 	int stage_defeat = 0;
 #ifdef PERSP
-	int manual = MARS_SYS_COMM8 & (SEGA_CTRL_X | SEGA_CTRL_Y | SEGA_CTRL_Z | SEGA_CTRL_MODE);
+	int manual = !fixed_camera &&
+	             (MARS_SYS_COMM8 & (SEGA_CTRL_X | SEGA_CTRL_Y | SEGA_CTRL_Z | SEGA_CTRL_MODE));
 	stage_defeat = PERSP == 1 && !manual && !cam_flat && !cam_pull && !flat_wanted &&
 	               camera_yaw_settled;
 #endif
@@ -420,7 +542,9 @@ void game_frame(void) {
 	anim_tick = MARS_SYS_COMM12;
 	int first = cam_snap;
 #ifdef PERSP
+	int camera_steps = steps;
 	int duel_step = steps * 32;
+	if(fixed_camera) camera_quarter_turn(steps);
 #endif
 #if defined(PERSP) && !defined(STATS)
 	int particles = vox_particles_active();
@@ -446,7 +570,7 @@ void game_frame(void) {
 		uint16_t yaw;
 	} shown;
 #endif
-	camera_buttons();
+	if(!fixed_camera) camera_buttons(0);
 	if(PERSP > 1) persp_yaw += 0x100;   /* PERSP=2 turns by itself, for measuring */
 
 	int is_flat = (cam_flat == 256 && persp_yaw == NORTH && cam_pull == 0);
@@ -459,13 +583,7 @@ void game_frame(void) {
 
 	int enemy_x, enemy_y;
 	if(vox_defeat_target(&enemy_x, &enemy_y)) play_defeat(enemy_x, enemy_y);
-	if(PERSP != 1 || first || manual || cam_flat || cam_pull || flat_wanted) {
-		duel_mix = 0;
-	} else if(vox_duel_target(&duel_x, &duel_y)) {
-		duel_mix = clamp(duel_mix + duel_step, 0, 256);
-	} else {
-		duel_mix = clamp(duel_mix - duel_step, 0, 256);
-	}
+	update_duel(camera_steps, PERSP != 1 || first || manual || cam_flat || cam_pull || flat_wanted);
 #if !defined(STATS)
 	if(is_flat) shown.valid = 0;
 #endif
@@ -485,12 +603,18 @@ void game_frame(void) {
 		int py = hy + (((fy - hy) * cam_flat) >> 8);
 		duel_centre(&px, &py);
 		int pull = duel_pull(gameplay_pull());
+		uint16_t view_yaw = game_input_yaw();
+		if(fixed_camera) {
+			int target = (MARS_SYS_COMM8 & SEGA_CTRL_MODE) ? 256 : 0;
+			fixed_close += clamp(target - fixed_close, -duel_step, duel_step);
+			pull += (FIGHT_PULL - pull) * fixed_close / 256;
+		}
 
 #if !defined(STATS)
 		/* The visible buffer is already valid. Keep polling and animating
 		 * on the vblank clock, without sending duplicate rays. */
 		if(shown.valid && !first && !screen_changed && !creatures_changed && !particles &&
-		   shown.x == px && shown.y == py && shown.yaw == persp_yaw &&
+		   shown.x == px && shown.y == py && shown.yaw == view_yaw &&
 		   shown.pull == pull && shown.flat == cam_flat && shown.res == cam_res) {
 			game_render_ticks = 0;
 			wait_vblank();
@@ -499,14 +623,14 @@ void game_frame(void) {
 		shown.valid = 1;
 		shown.x = px;
 		shown.y = py;
-		shown.yaw = persp_yaw;
+		shown.yaw = view_yaw;
 		shown.pull = pull;
 		shown.flat = cam_flat;
 		shown.res = cam_res;
 #endif
 
 		uint16_t p0 = frt_read();
-		persp_render((uint16_t *)&MARS_FRAMEBUFFER, px, py, persp_yaw, pull, cam_flat, cam_res);
+		persp_render((uint16_t *)&MARS_FRAMEBUFFER, px, py, view_yaw, pull, cam_flat, cam_res);
 		game_render_ticks = (uint16_t)(frt_read() - p0);
 		swapBuffers();
 
@@ -549,13 +673,18 @@ void game_frame(void) {
 /* Rogue still has its dungeon screen here, including the fatal attacker.
  * Play the scene on the vblank clock without taking any more game turns. */
 void game_death(void) {
-	enum { PUSH = 24, SPATTER = 32, BURST = 45, RETREAT = 72, END = 105 };
+	enum { PUSH = 24, SPATTER = 32, BURST = 45, FADE = 33 };
 #ifdef PERSP
+	enum { ORBIT_START = 80, ORBIT_TICKS = 180, RETREAT = ORBIT_START + ORBIT_TICKS };
 	update_hero_gear();
 	int start_pull = duel_pull(gameplay_pull());
 	int start_flat = cam_flat;
 	const int closest = -172;
+	const int orbit_pull = -140;
+#else
+	enum { RETREAT = 72 };
 #endif
+	const int end = RETREAT + FADE;
 	load_dungeon_screen(0);
 	vox_hero_hit_flash(0);
 #ifdef PERSP
@@ -577,7 +706,7 @@ void game_death(void) {
 	int advanced = PUSH - 4;
 	int light = VOX_FULL_LIGHT;
 	for(;;) {
-		int t = clamp((int)(MARS_SYS_COMM12 - start), 0, END);
+		int t = clamp((int)(MARS_SYS_COMM12 - start), 0, end);
 #ifdef PERSP
 		int previous = advanced;
 #endif
@@ -597,11 +726,14 @@ void game_death(void) {
 		if(t >= PUSH - 4) sounds();
 #ifdef PERSP
 		int push = clamp(t, 0, PUSH);
-		int retreat = clamp(t - RETREAT, 0, END - RETREAT);
+		int retreat = clamp(t - RETREAT, 0, FADE);
+		int orbit = clamp(t - ORBIT_START, 0, ORBIT_TICKS);
 		/* At its closest, the hero is about 50 percent larger than in
 		 * the normal gameplay view. */
 		int pull = start_pull + (closest - start_pull) * push / PUSH
-		         + (256 - closest) * retreat * retreat / ((END - RETREAT) * (END - RETREAT));
+		         + (orbit_pull - closest) * ease_mix(clamp(t - BURST, 0, ORBIT_START - BURST)
+		                                      * 256 / (ORBIT_START - BURST)) / 256
+		         + (256 - orbit_pull) * retreat * retreat / (FADE * FADE);
 		int flat = start_flat * (PUSH - push) / PUSH;
 		int x = hx + ((fx - hx) * flat >> 8) + (from_x - hx) * (PUSH - push) / PUSH;
 		int y = hy + ((fy - hy) * flat >> 8) + (from_y - hy) * (PUSH - push) / PUSH;
@@ -610,17 +742,18 @@ void game_death(void) {
 			if(t >= SPATTER + 6)
 				persp_death_pool(hx / CELL, hy / CELL, (unsigned)(t - SPATTER - 6));
 		}
-		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, persp_yaw, pull, flat, cam_res);
+		uint16_t yaw = (uint16_t)(game_input_yaw() + orbit * 0x10000 / ORBIT_TICKS);
+		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, yaw, pull, flat, cam_res);
 #else
 		vox_prepare((uint16_t *)&MARS_FRAMEBUFFER, currentFB, x, y);
 #endif
-		int next_light = VOX_FULL_LIGHT * clamp(END - t, 0, END - RETREAT) / (END - RETREAT);
+		int next_light = VOX_FULL_LIGHT * clamp(end - t, 0, FADE) / FADE;
 		if(next_light != light) {
 			vox_palette(next_light);
 			light = next_light;
 		}
 		swapBuffers();
-		if(t == END) break;
+		if(t == end) break;
 	}
 	blanked = 1;
 }
@@ -635,13 +768,35 @@ void game_blank(void) {
 	wait_vblank();
 }
 
+#ifdef PERSP
+void game_bestiary_wait(void) {
+	wait_vblank();
+}
+
+void game_bestiary_frame(int kind, uint16_t yaw, int lunge) {
+	if(blanked) {
+		vox_palette(VOX_FULL_LIGHT);
+		blanked = 0;
+	}
+	persp_bestiary((uint16_t *)&MARS_FRAMEBUFFER, kind, yaw, lunge);
+	swapBuffers();
+	sfx_flush();
+}
+
+void game_bestiary_end(void) {
+	persp_bestiary_end();
+	vox_forget();
+	cam_snap = 1;
+	anim_tick = MARS_SYS_COMM12;
+}
+#endif
+
 #if defined(PERSP) && !defined(BOT) && !defined(BENCH)
 static int stair_depth;
 #define STAIR_CLOSE (-184)
 
 static int stair_ease(int t, int duration) {
-	int p = clamp(t, 0, duration) * 256 / duration;
-	return ((p * p >> 8) * (768 - 2 * p)) >> 8;
+	return ease_mix(clamp(t, 0, duration) * 256 / duration);
 }
 
 static void stair_frame(int x, int y, int pull, int flat) {
@@ -659,15 +814,14 @@ void game_stairs_depart(void) {
 	text_commit();
 
 	update_hero_gear();
-	int height = persp_hero_height();
 	int x = vox_hero_cx * CELL + CELL / 2, y = vox_hero_cy * CELL + CELL / 2;
 	int from_x = x + ((cam_x + VIEW_W / 2 - x) * cam_flat >> 8);
 	int from_y = y + ((cam_y + VIEW_H / 2 - y) * cam_flat >> 8);
 	duel_centre(&from_x, &from_y);
 	int from_pull = duel_pull(gameplay_pull());
-	uint16_t from_yaw = persp_yaw;
+	uint16_t from_yaw = game_input_yaw();
 	int swing = (int16_t)(best_view(persp_yaw, 15, 0x1000) - from_yaw);
-	int last_buried = -1, last_offset = -4, last_hop = -1, last_light = -1;
+	int last_sink = -1, last_offset = -4, last_hop = -1, last_light = -1;
 	uint32_t start = MARS_SYS_COMM12;
 	for(;;) {
 		int t = clamp((int)(MARS_SYS_COMM12 - start), 0, END);
@@ -677,14 +831,12 @@ void game_stairs_depart(void) {
 		int offset = t < PUSH ? -3 * p / 256 :
 		             -3 + step * 2 + (beat * 2 + HOP / 2) / HOP;
 		int hop = (beat * (HOP - beat) + 8) / 12;
-		int buried = step * 2 + (beat * 2 + HOP / 2) / HOP;
-		if(t >= END - FADE)
-			buried += (height - buried) * (t - (END - FADE)) / FADE;
+		int sink = 4 * clamp(t - (END - FADE), 0, FADE) / FADE;
 		int light = VOX_FULL_LIGHT * clamp(END - t, 0, FADE) / FADE;
-		if(buried != last_buried || offset != last_offset || hop != last_hop) {
+		if(sink != last_sink || offset != last_offset || hop != last_hop) {
 			if(t == 0) persp_creatures(0);
-			else persp_stair_hop(buried, offset, hop);
-			last_buried = buried;
+			else persp_stair_hop(sink, offset, hop);
+			last_sink = sink;
 			last_offset = offset;
 			last_hop = hop;
 		}
@@ -707,12 +859,16 @@ void game_stairs_arrive(void) {
 #if defined(PERSP) && !defined(BOT) && !defined(BENCH)
 	if(!stair_depth || rogue_depth() != stair_depth) return;
 	stair_depth = 0;
+	quarter_remaining = 0;
+	quarter_buttons = MARS_SYS_COMM8 & (SEGA_CTRL_X | SEGA_CTRL_Z);
+	camera_yaw_settled = 1;
 	enum { BLACK_HOLD = 7, DIVE = 20, DROP_AT = 28, FALL = 14,
 	       LAND = DROP_AT + FALL, SETTLE = LAND + 10, PULL = 22, END = SETTLE + PULL };
 	static const uint8_t bounce[] = { 0, 0, 0, 1, 2, 2, 1, 1, 0, 0 };
 	load_dungeon_screen(0);
 	update_hero_gear();
-	duel_mix = 0;
+	duel_mix = duel_yaw_offset = duel_manual = 0;
+	duel_target_id = 0;
 	uint16_t view = best_view(persp_yaw, 15, 0x1000);
 	persp_yaw = view;
 	int x = vox_hero_cx * CELL + CELL / 2, y = vox_hero_cy * CELL + CELL / 2;

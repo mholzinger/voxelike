@@ -13,7 +13,7 @@
 
 /* --- Terrain vox_models ------------------------------------------------- */
 enum {
-    M_VOID, M_FLOOR, M_FLOOR2, M_WALL, M_WALL_LOW, M_DOOR_H, M_DOOR_LOW, M_DOOR_V,
+    M_VOID, M_FLOOR, M_FLOOR2, M_WALL, M_DOOR_H, M_DOOR_V,
     M_PASSAGE, M_STAIRS, M_TRAP, M_GOLD, M_POTION, M_SCROLL, M_FOOD, M_WEAPON,
     M_ARMOR, M_RING, M_STICK, M_AMULET, M_MAGIC,
     M_ROCK_EDGE, M_ROCK_CORNER = M_ROCK_EDGE + 4,
@@ -86,7 +86,7 @@ static int hero_hit_pending;
 static uint32_t impact_id;
 static unsigned impact_left;
 static unsigned low_hp_phase;
-static int low_hp, hero_color_changed;
+static int low_hp, hero_appearance_changed;
 
 enum { PART_SMALL, PART_CHUNK, PART_BUOYANT, PART_FLOATING = PART_BUOYANT + 3 };
 
@@ -138,6 +138,7 @@ static const int8_t lunge_reach[LUNGE + 1] = { 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 
 
 /* A front face is darker than the top face lit by the same light. */
 const uint8_t vox_shadow_material = MAT(MT_SHADOW);
+const uint8_t vox_stone_material = MAT(MT_STONE);
 const uint8_t vox_blood_material = MAT(MT_FOOD); /* deep red */
 const uint8_t vox_front_shade[N_SHADES] = { 0, 0, 1, 2, 2, 3, 4, 5 };
 
@@ -209,37 +210,18 @@ static void build_models(void) {
             col_set(&vox_models[M_PASSAGE].col[lx][ly], 1,
                     speck ? MAT(MT_DIRT) : MAT(MT_DIRT2));
 
-            /* Brick courses two voxels tall, staggered, under a cap stone. */
+            /* A single brick course and cap on every side of a room. */
             vcol_t *w = &vox_models[M_WALL].col[lx][ly];
-            w->h = 8;
-            for (int z = 0; z < 8; z++) {
-                int course = z >> 1;
-                int brick = (lx + ((course & 1) ? 2 : 0)) >> 2;
-                w->c[z] = ((brick + course) & 1) ? MAT(MT_BRICKA) : MAT(MT_BRICKB);
-            }
-            w->c[7] = terrain_wall_cap[ly][lx];
+            col_set(w, 2, MAT(MT_BRICKB));
+            w->c[1] = terrain_wall_cap[ly][lx];
 
-            /* A room's near wall is cut down so it cannot hide the row of
-             * floor behind it from this camera. */
-            vcol_t *wl = &vox_models[M_WALL_LOW].col[lx][ly];
-            col_set(wl, 2, MAT(MT_BRICKB));
-            wl->c[1] = terrain_wall_cap[ly][lx];
-
-            /* Door in a horizontal wall: posts left and right. */
+            /* The stone jambs line up with the wall caps around the threshold. */
             vcol_t *dh = &vox_models[M_DOOR_H].col[lx][ly];
-            col_set(dh, 1, MAT(MT_WOOD));
-            if (lx == 0 || lx == CELL - 1) col_set(dh, 10, MAT(MT_CAP));
-
-            vcol_t *dl = &vox_models[M_DOOR_LOW].col[lx][ly];
-            col_set(dl, 1, MAT(MT_WOOD));
-            if (lx == 0 || lx == CELL - 1) col_set(dl, 3, MAT(MT_CAP));
-
-            /* Door in a vertical wall: a tall back post and a low front
-             * stub, so the opening stays visible from this camera. */
             vcol_t *dv = &vox_models[M_DOOR_V].col[lx][ly];
+            col_set(dh, 1, MAT(MT_WOOD));
             col_set(dv, 1, MAT(MT_WOOD));
-            if (ly == 0) col_set(dv, 10, MAT(MT_CAP));
-            if (ly == CELL - 1) col_set(dv, 3, MAT(MT_CAP));
+            if (lx == 0 || lx == CELL - 1) *dh = *w;
+            if (ly == 0 || ly == CELL - 1) *dv = *w;
 
             /* Steps going down to the right, from the level of the floor
              * around them into the pit their cell is sunk into. */
@@ -328,24 +310,17 @@ static int is_wall(int ch) {
     return ch == '-' || ch == '|';
 }
 
-/* True when the cell to the north is inside a room, which makes this the
- * room's near (south) wall. */
-static int room_to_north(int cx, int cy, vox_under_fn under) {
-    int n = under(cx, cy - 1);
-    return n == '|' || (n != ' ' && n != '#' && n != '-' && n != '+');
-}
-
 /* Model for a terrain or item character. under() answers what the level
  * itself holds at a cell, seen or not, which is what decides how a wall or
  * door sits. */
 static uint8_t tile_for(int ch, int cx, int cy, vox_under_fn under) {
     switch (ch) {
     case '.': return ((cx + cy) & 1) ? M_FLOOR2 : M_FLOOR;
-    case '|': return M_WALL;
-    case '-': return room_to_north(cx, cy, under) ? M_WALL_LOW : M_WALL;
+    case '|':
+    case '-': return M_WALL;
     case '+':
         if (!is_wall(under(cx - 1, cy)) && !is_wall(under(cx + 1, cy))) return M_DOOR_V;
-        return room_to_north(cx, cy, under) ? M_DOOR_LOW : M_DOOR_H;
+        return M_DOOR_H;
     case '#': return M_PASSAGE;
     case '%': return M_STAIRS;
     case '^': return M_TRAP;
@@ -609,7 +584,7 @@ static int adjacent_to_hero(const ent_t *e) {
     return dx >= -CELL && dx <= CELL && dy >= -CELL && dy <= CELL;
 }
 
-int vox_duel_target(int *x, int *y) {
+int vox_duel_target(vox_duel_t *shot) {
     const ent_t *target = 0;
     int nearest = 2 * CELL * CELL + 1;
     for (int i = 0; i < n_ents; i++) {
@@ -631,8 +606,11 @@ int vox_duel_target(int *x, int *y) {
     }
     duel_foe = target ? target->id : 0;
     if (!target) return 0;
-    *x = target->x + CELL / 2;
-    *y = target->y + CELL / 2;
+    shot->id = target->id;
+    shot->x = target->x + CELL / 2;
+    shot->y = target->y + CELL / 2;
+    shot->dx = target->tx / CELL - vox_hero_cx;
+    shot->dy = target->ty / CELL - vox_hero_cy;
     return 1;
 }
 
@@ -827,8 +805,8 @@ static void hero_follow(void) {
 }
 
 void vox_animate(void) {
-    vox_moving = hero_color_changed;
-    hero_color_changed = 0;
+    vox_moving = hero_appearance_changed;
+    hero_appearance_changed = 0;
     if (low_hp && ++low_hp_phase == 2 * LOW_HP_HALF) low_hp_phase = 0;
     ent_t *recoiling = 0;
     for (int i = 0; i < n_ents; i++) {
@@ -938,6 +916,21 @@ int vox_creature(int i, vox_creature_t *c) {
         c->face = facing(defeated.x - e->x, defeated.y - e->y);
     c->flash = creature_flash(e);
     return 1;
+}
+
+void vox_hero_turn(int dx, int dy) {
+    for (int i = 0; i < n_ents; i++) {
+        ent_t *hero = &ents[i];
+        if (hero->id != HERO_ID) continue;
+        uint8_t face = facing(dx, dy);
+        if (hero->face != face) {
+            stale_ent(hero);
+            hero->face = face;
+            vox_hero_face = face;
+            hero_appearance_changed = 1;
+        }
+        return;
+    }
 }
 
 void vox_hero_lunge(int dx, int dy) {
@@ -1148,7 +1141,7 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                 if (warning != low_hp) {
                     low_hp = warning;
                     low_hp_phase = 0;
-                    hero_color_changed = 1;
+                    hero_appearance_changed = 1;
                     stale_ent(e);
                 }
             }
@@ -1183,6 +1176,10 @@ void vox_palette(int light) {
 }
 
 static uint8_t model_height[M_COUNT];      /* tallest column of each model */
+
+int vox_stair_at(int cx, int cy) {
+    return (unsigned)cx < MAP_W && (unsigned)cy < MAP_H && vox_tile[cy][cx] == M_STAIRS;
+}
 
 int vox_height_at(int cx, int cy) {
     if ((unsigned)cx >= MAP_W || (unsigned)cy >= MAP_H || vox_tile[cy][cx] == M_VOID) return 0;

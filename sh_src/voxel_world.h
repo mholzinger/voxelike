@@ -4,7 +4,8 @@
 #include "voxel.h"
 
 /* The world as voxel.c holds it, for another renderer to read. */
-#define VOX_MODELS_MAX 33                  /* room for every terrain model */
+#define VOX_MODELS_MAX 31                  /* room for every terrain model */
+#define VOX_AIR_GAP 0xff                   /* marker between terrain and a jumping model */
 extern vmodel_t vox_models[];
 extern const int vox_model_count;
 extern uint8_t vox_tile[MAP_H][MAP_W];     /* index into vox_models */
@@ -13,8 +14,10 @@ extern uint8_t vox_lift[MAP_H][MAP_W];     /* voxels of plinth under the model *
 extern uint8_t vox_plinth[];               /* plinth material, by model index */
 extern uint16_t vox_wtab[256];             /* CRAM index -> doubled pixel word */
 extern const uint8_t vox_shadow_material;
+extern const uint8_t vox_stone_material;
 extern const uint8_t vox_blood_material;
 extern const uint8_t vox_front_shade[8];   /* shade of a side under a top's light */
+int vox_stair_at(int cx, int cy);
 
 /* Temporary terrain for the handful of tiles assembling during a step. */
 const vmodel_t *vox_assembly_model(int cx, int cy);

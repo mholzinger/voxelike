@@ -6,6 +6,7 @@ unsigned long plat_ticks(void);        /* vblanks since power on */
 int           plat_getkey(void);       /* block until the player gives a command */
 void          plat_exit(int status);   /* the game is over */
 void          plat_descend(void);      /* a valid stair descent is about to generate a floor */
+void          plat_record_kill(int type);
 
 /* A curses window was refreshed. cells is lines * cols characters, bit 7
  * set on standout ones. main_screen is nonzero for Rogue's 80x24 screen. */
@@ -19,7 +20,9 @@ int  rogue_under(int x, int y);            /* level character at a screen cell *
 unsigned long rogue_who(int x, int y);     /* the monster at a screen cell, or 0 */
 int  rogue_alive(unsigned long who);       /* is that monster still in the level */
 int  rogue_hp(unsigned long who, int *maximum);          /* its hit points; 1 asks for the player's */
+int  rogue_combat_rank(unsigned long who);   /* Rogue's combat level, or 0 if gone */
 int  rogue_depth(void);                    /* dungeon level */
+const char *rogue_monster_name(int kind);  /* 1 through 26, A through Z */
 int  rogue_room_id(void);                  /* which room the player is in, -1 in the passages */
 void rogue_tally(int *gold, int *things, int *rank);   /* purse, pack count, experience level */
 int  rogue_ground(int x, int y);           /* how high a cell's ground stands, in voxels */

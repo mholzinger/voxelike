@@ -283,6 +283,20 @@ rogue_depth(void)
     return level;
 }
 
+int
+rogue_combat_rank(unsigned long who)
+{
+    if (who == 1)
+	return pstats.s_lvl;
+    return rogue_alive(who) ? ((THING *)who)->t_stats.s_lvl : 0;
+}
+
+const char *
+rogue_monster_name(int kind)
+{
+    return monsters[kind - 1].m_name;
+}
+
 /*
  * rogue_room_id:
  *	The number of the room the player is in. Passages, and the rooms

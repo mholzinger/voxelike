@@ -18,6 +18,13 @@ extern void game_stairs_arrive(void);
 
 int plat_screen_changed = 1;
 
+static uint16_t defeated_count[26];
+
+void plat_record_kill(int type) {
+	unsigned index = (unsigned)(type - 'A');
+	if(index < 26 && defeated_count[index] < UINT16_MAX) defeated_count[index]++;
+}
+
 /* The player's own turns take STEP frames on screen. Nothing happens
  * between them: IDLE_TURN is how many vblanks the world would wait before
  * taking a turn of its own, and 0 is never. It was 24 once, and a hero
@@ -154,7 +161,7 @@ static void wait_any(void (*frame)(void), int frames) {
 static unsigned pad_turn;   /* in eighths, always even */
 
 static void pad_turn_latch(void) {
-	uint16_t north = (uint16_t)(persp_yaw - 0xC000);
+	uint16_t north = (uint16_t)(game_input_yaw() - 0xC000);
 	int off = (int16_t)(north - (pad_turn << 13));
 	if(off < -0x2000 || off > 0x2000)
 		pad_turn = (((uint16_t)(north + 0x2000) >> 14) & 3) * 2;
@@ -534,8 +541,8 @@ static void show_page(const unsigned char *cells, int lines, int cols) {
 
 /* A cursor list over the dungeon. line(i) names entry i. Returns the entry
  * chosen with A or C, or -1 when B backs out. */
-static int choose(int n, const char *(*line)(int)) {
-	int sel = 0, first = 0, width = 0;
+static int choose(int n, const char *(*line)(int), int sel) {
+	int first = 0, width = 0;
 
 	for(int i = 0; i < n; i++) {
 		const char *label = line(i);
@@ -598,6 +605,9 @@ static const struct { const char *name; char key; } commands[] = {
 	{ "Drop",           'd' },
 	{ "Climb stairs",   '<' },
 	{ "Discoveries",    'D' },
+#ifdef PERSP
+	{ "Options",         0 },
+#endif
 	{ "Quit",           'Q' },
 };
 #define N_COMMANDS ((int)(sizeof(commands) / sizeof(commands[0])))
@@ -605,6 +615,110 @@ static const struct { const char *name; char key; } commands[] = {
 static const char *command_line(int i) {
 	return commands[i].name;
 }
+
+#ifdef PERSP
+extern void game_bestiary_frame(int kind, uint16_t yaw, int lunge);
+extern void game_bestiary_end(void);
+extern void game_bestiary_wait(void);
+
+static int preview_kind, preview_dirty;
+static uint16_t preview_yaw;
+static uint32_t preview_at, preview_attack;
+
+static void bestiary_frame(void) {
+	if(!preview_kind) {
+		game_blank();
+		return;
+	}
+	uint32_t now = MARS_SYS_COMM12;
+	uint32_t elapsed = now - preview_at;
+	if(elapsed < 4 && !preview_dirty) {
+		game_bestiary_wait();
+		return;
+	}
+	static const uint8_t reach[] = { 0, 1, 3, 2, 0 };
+	unsigned phase = (now - preview_attack) / 4;
+	int lunge = preview_attack && phase < sizeof reach ? reach[phase] : 0;
+	if(preview_attack && phase >= sizeof reach) preview_attack = 0;
+	preview_yaw += (uint16_t)(elapsed * 145);
+	preview_at = now;
+	preview_dirty = 0;
+	game_bestiary_frame(preview_kind, preview_yaw, lunge);
+}
+
+static void show_bestiary(void) {
+	enum { LIST_W = 19, LIST_ROWS = 17 };
+	uint8_t kinds[26];
+	int count = 0;
+	for(int i = 0; i < 26; i++)
+		if(defeated_count[i]) kinds[count++] = (uint8_t)(i + 1);
+	int sel = 0, first = 0;
+	preview_kind = count ? kinds[0] : 0;
+	preview_yaw = 0xD000;
+	preview_attack = 0;
+	preview_at = MARS_SYS_COMM12;
+	for(;;) {
+		text_begin();
+		box_line(HUD_X, 2, HUD_W, "Bestiary", -1);
+		text_box_outline(HUD_X, 1, HUD_W, 3);
+		if(count) {
+			if(sel < first) first = sel;
+			if(sel >= first + LIST_ROWS) first = sel - LIST_ROWS + 1;
+			int shown = count - first < LIST_ROWS ? count - first : LIST_ROWS;
+			for(int i = 0; i < shown; i++) {
+				text_fill(HUD_X + 1, i + 5, LIST_W - 2, TEXT_HUD);
+				if(first + i == sel) text_tile(HUD_X + 1, i + 5, TEXT_HUD | HUD_CURSOR);
+				text_put(HUD_X + 2, i + 5, rogue_monster_name(kinds[first + i]), LIST_W - 3, TEXT_HUD, 1);
+			}
+			text_box_outline(HUD_X, 4, LIST_W, shown + 2);
+			char tally[20];
+			*put_number(tally, "Defeated  ", defeated_count[preview_kind - 1]) = 0;
+			box_line(21, 22, 18, tally, -1);
+			text_box_outline(21, 21, 18, 3);
+			box_line(HUD_X, 25, HUD_W, "Up/Down Browse  Left/Right Turn", -1);
+			box_footer(HUD_X, 26, HUD_W, "A  Attack    B  Back");
+		} else {
+			box_line(HUD_X, 5, HUD_W, "No creatures defeated yet.", -1);
+			text_box_outline(HUD_X, 4, HUD_W, 3);
+			box_footer(HUD_X, 25, HUD_W, "B  Back");
+		}
+		text_box_outline(HUD_X, 24, HUD_W, count ? 4 : 3);
+		text_commit();
+		preview_dirty = 1;
+		for(;;) {
+			input_t in = poll(bestiary_frame);
+			if(in.pressed & SEGA_CTRL_B) {
+				game_bestiary_end();
+				return;
+			}
+			if(!count) continue;
+			if(in.pressed & SEGA_CTRL_A) preview_attack = MARS_SYS_COMM12;
+			if(in.dir & SEGA_CTRL_LEFT) { preview_yaw -= 0x1400; preview_dirty = 1; }
+			if(in.dir & SEGA_CTRL_RIGHT) { preview_yaw += 0x1400; preview_dirty = 1; }
+			int step = (in.dir & SEGA_CTRL_UP) ? -1 : (in.dir & SEGA_CTRL_DOWN) ? 1 : 0;
+			if(step && count > 1) {
+				sel = (sel + count + step) % count;
+				preview_kind = kinds[sel];
+				preview_attack = 0;
+				break;
+			}
+		}
+	}
+}
+
+static const char *option_line(int i) {
+	if(i == 0) return "Bestiary";
+	return game_camera_fixed() ? "Camera  Fixed angle" : "Camera  Free orbit";
+}
+
+static void show_options(void) {
+	int sel = 0;
+	while((sel = choose(2, option_line, sel)) >= 0) {
+		if(sel == 0) show_bestiary();
+		else game_toggle_camera();
+	}
+}
+#endif
 
 #define MAX_PACK 23   /* Rogue's MAXPACK */
 static char pack_text[MAX_PACK][TEXT_W];
@@ -626,7 +740,7 @@ static int pick_item(void) {
 	}
 	if(n == 0) return ESCAPE;
 
-	int sel = choose(n, pack_line);
+	int sel = choose(n, pack_line, 0);
 	return sel < 0 ? ESCAPE : pack_key[sel];
 }
 
@@ -711,11 +825,11 @@ static int prompt_key(void) {
 	for(int i = 0; i < N_ASKS; i++) {
 		if(!contains(scr, len, asks[i].asks)) continue;
 		asking = &asks[i];
-		int sel = choose(asking->n, ask_line);
+		int sel = choose(asking->n, ask_line, 0);
 		return sel < 0 ? ESCAPE : asking->keys[sel];
 	}
 	if(contains(scr, len, "call it")) {
-		int sel = choose(N_GUESSES, guess_line);
+		int sel = choose(N_GUESSES, guess_line, 0);
 		if(sel < 0) return ESCAPE;
 		typing = guesses[sel] + 1;
 		return guesses[sel][0];
@@ -749,6 +863,8 @@ static int step_key(uint16_t dir) {
 	if(rogue_who(vox_hero_cx + dx, vox_hero_cy + dy)) {
 		vox_hero_lunge(dx, dy);
 		step_dir = 0;
+	} else {
+		vox_hero_turn(dx, dy);
 	}
 	return dir_key(dir);
 }
@@ -853,7 +969,13 @@ static int command_key(void) {
 		}
 		if(in.pressed & SEGA_CTRL_A) {
 			pending = 0;
-			int sel = choose(N_COMMANDS, command_line);
+			int sel = choose(N_COMMANDS, command_line, 0);
+#ifdef PERSP
+			while(sel >= 0 && commands[sel].key == 0) {
+				show_options();
+				sel = choose(N_COMMANDS, command_line, sel);
+			}
+#endif
 			if(sel >= 0) return commands[sel].key;
 			compose_hud();
 			text_commit();

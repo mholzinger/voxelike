@@ -96,7 +96,9 @@ typedef struct {
     uint8_t lift;
     uint8_t plinth;
     uint8_t stain;
-    uint8_t pad[3];
+    uint8_t creature_index;  /* 1-based index into creature_layers, or 0 */
+    uint8_t ground;       /* terrain's own height, before a creature is placed */
+    uint8_t pad;
 } pcell_t;
 
 typedef char pcell_is_a_line[sizeof(pcell_t) == 16 ? 1 : -1];
@@ -105,10 +107,13 @@ static pcell_t cells[MAP_H][MAP_W];
 /* A cell with a creature in it gets a model of its own: the terrain's, with
  * the creature's voxel columns standing on it. */
 static vmodel_t bump[MAX_BUMPS];
+static uint8_t creature_layers[MAX_BUMPS][CELL][CELL];
 static struct { uint8_t cx, cy; } bumped[MAX_BUMPS];
 static int n_bumped;
+static int runs_ready, bestiary_active;
 static int arrival_altitude;
 static uint8_t model_flat[VOX_MODELS_MAX];
+
 
 static unsigned flatness(const vmodel_t *m);
 
@@ -145,9 +150,11 @@ static void terrain(int cx, int cy) {
 
     const vmodel_t *partial = vox_assembly_model(cx, cy);
     pc->m = partial ? partial : &vox_models[tile];
+    pc->creature_index = 0;
     pc->stain = (uint8_t)vox_stained(cx, cy);
     pc->top = pc->stain ? stained_tops[tile] : tops[tile];
     pc->flat = (uint8_t)(partial || h == DETAIL ? DETAIL : h + vox_lift[cy][cx]);
+    pc->ground = pc->flat;
     pc->lift = vox_lift[cy][cx];
     pc->plinth = vox_plinth[tile];
     if (pc->flat) pc->light = vox_light[cy][cx];
@@ -160,7 +167,6 @@ static unsigned run_at(int cx, int cy) {
 /* Refresh the empty runs only when a cell changes between empty and
  * occupied. Light, height, items and creatures leave those runs valid. */
 void persp_sync(int terrain_changed) {
-    static int runs_ready;
     int rebuild_runs = !runs_ready;
     if (terrain_changed || rebuild_runs) {
         n_bumped = 0;
@@ -304,6 +310,25 @@ int persp_hero_height(void) {
     return height;
 }
 
+/* Store the terrain height and the creature's foot layer in one byte.
+ * Adding one to the foot layer leaves zero for a bare terrain column. */
+static void mark_creature_column(pcell_t *cell, unsigned model, int x, int y,
+                                 unsigned ground, unsigned foot) {
+    if (!cell->creature_index) {
+        memset(creature_layers[model], 0, sizeof creature_layers[model]);
+        cell->creature_index = (uint8_t)(model + 1);
+    }
+    uint8_t *layers = &creature_layers[model][x][y];
+    if (!*layers) *layers = (uint8_t)((ground << 4) | (foot + 1));
+}
+
+static int overlaps_stairs(int x, int y) {
+    int left = x >> 3, right = (x + CELL - 1) >> 3;
+    int top = y >> 3, bottom = (y + CELL - 1) >> 3;
+    return vox_stair_at(left, top) || vox_stair_at(right, top) ||
+           vox_stair_at(left, bottom) || vox_stair_at(right, bottom);
+}
+
 /* Stand every creature where it is this frame. A creature is 8x8 columns
  * of voxels, turned to face the way it last moved; walking between cells
  * it stands partly on each. */
@@ -322,21 +347,37 @@ static void place_creatures(int hero_buried, int stair, int offset, int hop) {
             c.z = hop;
             c.face = 3;   /* the stair treads descend along positive X */
         }
+        int rigid = !c.kind && (stair || overlaps_stairs(c.x, c.y));
+        int feet = 0;
+        if (rigid) {
+            int x = c.x + CELL / 2, y = c.y + CELL / 2;
+            int cx = x >> 3, cy = y >> 3;
+            if ((unsigned)cx >= MAP_W || (unsigned)cy >= MAP_H) continue;
+            const vmodel_t *ground = &vox_models[vox_tile[cy][cx]];
+            feet = vox_lift[cy][cx] + ground->col[x & 7][y & 7].h + c.z;
+            if (stair) feet -= hero_buried;
+        }
         const vcol_t (*model)[CELL] = c.kind ? ent_solid[c.kind] : hero_dressed(c.attack);
         for (int fx = 0; fx < CELL; fx++) {
             for (int fy = 0; fy < CELL; fy++) {
                 const vcol_t *src = vox_model_column(model, c.face, fx, fy);
-                int buried = c.kind ? 0 : hero_buried;
+                int buried = c.kind || stair ? 0 : hero_buried;
                 if (src->h <= buried) continue;
 
                 int wx = c.x + fx, wy = c.y + fy;
                 vmodel_t *m = bump_for(wx >> 3, wy >> 3);
                 if (!m) continue;
                 vcol_t *dst = &m->col[wx & 7][wy & 7];
-                /* A hop lifts it; what is under its feet reads as shadow. */
-                for (int z = 0; z < c.z && dst->h < COL_MAXH; z++) {
-                    dst->c[dst->h++] = src->c[0];
+                pcell_t *cell = &cells[wy >> 3][wx >> 3];
+                int base = dst->h;
+                int gap = rigid ? feet - cell->lift - base : c.z;
+                if (gap < 0) buried -= gap;
+                if (src->h <= buried || base + (gap > 0 ? gap : 0) >= COL_MAXH) continue;
+                for (int z = 0; z < gap; z++) {
+                    dst->c[dst->h++] = VOX_AIR_GAP;
                 }
+                if (rigid || c.z || cell->ground != DETAIL || cell->creature_index)
+                    mark_creature_column(cell, (unsigned)(m - bump), wx & 7, wy & 7, base, dst->h);
                 for (int z = buried; z < src->h && dst->h < COL_MAXH; z++) {
                     dst->c[dst->h++] = c.flash ? (uint8_t)(c.flash & ~7) : src->c[z];
                 }
@@ -349,8 +390,8 @@ void persp_creatures(int hero_buried) {
     place_creatures(hero_buried, 0, 0, 0);
 }
 
-void persp_stair_hop(int hero_buried, int offset, int hop) {
-    place_creatures(hero_buried, 1, offset, hop);
+void persp_stair_hop(int sink, int offset, int hop) {
+    place_creatures(sink, 1, offset, hop);
 }
 
 void persp_arrival_hero(int altitude) {
@@ -364,6 +405,7 @@ void persp_death_pool(int cx, int cy, unsigned age) {
     const vmodel_t *floor = &vox_models[vox_tile[cy][cx]];
     unsigned height = floor->col[CELL / 2][CELL / 2].h;
     if (!height || height > 3) return;
+    cells[cy][cx].ground = DETAIL;
 
     /* Grow in voxel-sized steps, with a slightly uneven edge. Recolour
      * the floor itself so bodies, debris and walls keep their depth. */
@@ -418,6 +460,8 @@ void persp_death_pool(int cx, int cy, unsigned age) {
  * over, and gets back when the cell has been drawn. */
 typedef struct {
     uint8_t *dst;                          /* in and out: how far the column is drawn */
+    uint8_t *creature_pixels;
+    int creature_top, creature_bottom;
     int ybuf, prev_h, x_side;
     int cx, cy;                            /* the cell, and the ray's depths at it */
     int32_t t_in, t_out, tcx, tcy;
@@ -425,6 +469,54 @@ typedef struct {
 } walk_t;
 
 typedef int walk_fn(walk_t *w);
+
+/* Paint the creature into a separate strip for this ray. The ground
+ * ray can then keep drawing behind its feet. Near terrain has already
+ * drawn rows at or below ybuf, so the strip respects wall occlusion. */
+static void draw_creature_column(walk_t *w, const vcol_t *col, int lift, int foot,
+                       int32_t t_in, int32_t t_out, int x_side, int ybuf, int ys,
+                       unsigned light) {
+    const int32_t T_NEAR = job.t_near;
+    int horizon = job.horizon << ys;
+    int height = col->h + lift;
+    int32_t near = (int32_t)INV(t_in), far = (int32_t)INV(t_out);
+    int top = horizon + (int)(((uint32_t)(job.eye_h - height) * far) >> (16 - ys));
+    int shoulder = horizon + (int)(((uint32_t)(job.eye_h - height) * near) >> (16 - ys));
+    int bottom = horizon + (int)(((uint32_t)(job.eye_h - foot) * near) >> (16 - ys));
+    if (bottom > ybuf) bottom = ybuf;
+    if (top < 0) top = 0;
+    if (top >= bottom) return;
+    if (w->creature_bottom == 0) {
+        memset(w->creature_pixels + top, 0, (size_t)(bottom - top));
+    } else {
+        if (top < w->creature_top)
+            memset(w->creature_pixels + top, 0, (size_t)(w->creature_top - top));
+        if (bottom > w->creature_bottom)
+            memset(w->creature_pixels + w->creature_bottom, 0, (size_t)(bottom - w->creature_bottom));
+    }
+    if (top < w->creature_top) w->creature_top = top;
+    if (bottom > w->creature_bottom) w->creature_bottom = bottom;
+
+    unsigned shade = vox_front_shade[light];
+    if (x_side && shade) shade--;
+    unsigned cap = col->c[col->h - 1] + light;
+    int32_t zstep = (int32_t)RISE(t_in) >> ys;
+    int32_t z = (job.eye_h << 16) - (top - horizon) * zstep;
+    for (int row = top; row < bottom; row++, z -= zstep) {
+        if (w->creature_pixels[row]) continue;
+        if (row < shoulder) {
+            w->creature_pixels[row] = (uint8_t)cap;
+        } else {
+            int layer = z >> 16;
+            if (layer < foot) layer = foot;
+            if (layer >= height) layer = height - 1;
+            unsigned pixel = col->c[layer - lift];
+            if (pixel != VOX_AIR_GAP) w->creature_pixels[row] = (uint8_t)(pixel + shade);
+        }
+    }
+}
+
+enum walk_mode { WALK_TERRAIN, WALK_MIXED, WALK_CREATURES };
 
 /* Walk the voxel columns of one cell, each adding its near side and its
  * top. Returns 1 when that has filled the screen column.
@@ -435,7 +527,7 @@ typedef int walk_fn(walk_t *w);
  * dozens (a creature, a door, the stairs). Apart, it is only in the cache
  * when it is in use. */
 static inline __attribute__((always_inline))
-int walk(walk_t *w, const int WIDE, const int YS) {
+int walk(walk_t *w, const int WIDE, const int YS, const enum walk_mode mode) {
     const int32_t EYE_H = job.eye_h, T_NEAR = job.t_near;
     const int32_t HORIZON = job.horizon << YS;
     const int YEND = 0;
@@ -466,47 +558,58 @@ int walk(walk_t *w, const int WIDE, const int YS) {
     int32_t tvy = tdy >= NEVER ? NEVER : w->tcy - tdy * (dy < 0 ? iy & 7 : 7 - (iy & 7));
     int32_t tv_in = t_in;
     unsigned sf0 = vox_front_shade[st];
+    const uint8_t (*layers_at)[CELL] = mode != WALK_TERRAIN ? creature_layers[pc->creature_index - 1] : 0;
 
     for (;;) {
         const vcol_t *col = &m->col[ix & 7][iy & 7];
-        int h = col->h + lift;
-
-        /* The side that faces the eye, where the ray came in. */
-        if (h > prev_h) {
-            uint32_t s = INV(tv_in);
-            int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
-            if (top < YEND) top = YEND;
-            if (top < ybuf) {
-                unsigned sf = (x_side && sf0) ? sf0 - 1 : sf0;
-                int32_t zstep = (int32_t)RISE(tv_in) >> YS;
-                int32_t z = (EYE_H << 16) - (ybuf - 1 - HORIZON) * zstep;
-                ROWS(top,
-                    int zi = z >> 16;
-                    if (zi < 0) zi = 0;
-                    if (zi >= h) zi = h - 1;
-                    p = vox_wtab[(zi < lift ? plinth : col->c[zi - lift]) + sf];
-                    z += zstep);
-                if (ybuf == YEND) { done = 1; break; }
-            }
-        }
-
-        /* Its top, from where the ray came in to where it goes out. */
         int vx_next = tvx < tvy;
         int32_t tv_out = vx_next ? tvx : tvy;
         if (tv_out > t_out) tv_out = t_out;
-        {
-            uint32_t s = INV(tv_out);
-            int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
-            if (top < YEND) top = YEND;
-            if (top < ybuf) {
-                int painted = pc->stain && col->h == 1 && vox_stain_pixel(ix & 7, iy & 7);
-                uint16_t pix = col->h ? vox_wtab[(painted ? vox_blood_material : col->c[col->h - 1]) + st]
-                                      : (h ? vox_wtab[plinth + st] : BLACK);
-                ROWS(top, p = pix);
-                if (ybuf == YEND) { done = 1; break; }
+        int ground = col->h;
+        if (mode != WALK_TERRAIN) {
+            unsigned layers = layers_at[ix & 7][iy & 7];
+            if (layers) {
+                ground = layers >> 4;
+                draw_creature_column(w, col, lift, lift + (layers & 15) - 1, tv_in, tv_out, x_side, ybuf, YS, st);
             }
         }
-        prev_h = h;
+        if (mode != WALK_CREATURES) {
+            int h = ground + lift;
+
+            /* The side that faces the eye, where the ray came in. */
+            if (h > prev_h) {
+                uint32_t s = INV(tv_in);
+                int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
+                if (top < YEND) top = YEND;
+                if (top < ybuf) {
+                    unsigned sf = (x_side && sf0) ? sf0 - 1 : sf0;
+                    int32_t zstep = (int32_t)RISE(tv_in) >> YS;
+                    int32_t z = (EYE_H << 16) - (ybuf - 1 - HORIZON) * zstep;
+                    ROWS(top,
+                        int zi = z >> 16;
+                        if (zi < 0) zi = 0;
+                        if (zi >= h) zi = h - 1;
+                        p = vox_wtab[(zi < lift ? plinth : col->c[zi - lift]) + sf];
+                        z += zstep);
+                    if (ybuf == YEND) { done = 1; break; }
+                }
+            }
+
+            /* Its top, from where the ray came in to where it goes out. */
+            {
+                uint32_t s = INV(tv_out);
+                int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
+                if (top < YEND) top = YEND;
+                if (top < ybuf) {
+                    int painted = pc->stain && ground == 1 && vox_stain_pixel(ix & 7, iy & 7);
+                    uint16_t pix = ground ? vox_wtab[(painted ? vox_blood_material : col->c[ground - 1]) + st]
+                                          : (h ? vox_wtab[plinth + st] : BLACK);
+                    ROWS(top, p = pix);
+                    if (ybuf == YEND) { done = 1; break; }
+                }
+            }
+            prev_h = h;
+        }
         if (tv_out >= t_out) break;
 
         if (vx_next) { ix += sx; tvx += tdx; }
@@ -522,13 +625,18 @@ int walk(walk_t *w, const int WIDE, const int YS) {
 static inline __attribute__((always_inline))
 void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
          int32_t tdx, int32_t tdy, const int WIDE, const int YS,
-         walk_fn *const WALK) {
+         walk_fn *const WALK, walk_fn *const MIXED_WALK, walk_fn *const ACTOR_WALK) {
     walk_t w;
     w.dx = dx; w.dy = dy; w.tdx = tdx; w.tdy = tdy; w.ex = ex; w.ey = ey;
     const int32_t EYE_H = job.eye_h, T_NEAR = job.t_near, T_FAR = job.t_far;
     const int32_t HORIZON = job.horizon << YS;
     const int YEND = 0;
     const int start_row = VIEW_H << YS;
+    uint8_t creature_pixels[VIEW_H << YS];
+    uint8_t *column_base = dst - (start_row - 1) * STRIDE;
+    w.creature_pixels = creature_pixels;
+    w.creature_top = start_row;
+    w.creature_bottom = 0;
     int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
     int32_t px = ex + (int32_t)(((int64_t)dx * T_NEAR) >> 16);
     int32_t py = ey + (int32_t)(((int64_t)dy * T_NEAR) >> 16);
@@ -559,6 +667,7 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
         int lift = 0;                      /* the cell's model stands this high */
         const vmodel_t *m = 0;
         const uint8_t *tex = 0;
+        int creature_on_flat = 0;
         if ((unsigned)cx < MAP_W && (unsigned)cy < MAP_H) {
             const pcell_t *pc = &cells[cy][cx];
             kind = pc->flat;
@@ -572,6 +681,8 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                 }
                 if (t_out > T_FAR) t_out = T_FAR;
             } else {
+                creature_on_flat = pc->creature_index && pc->ground != DETAIL;
+                if (creature_on_flat) kind = pc->ground;
                 m = pc->m;
                 tex = pc->top;
                 st = pc->light;
@@ -584,13 +695,19 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
             break;
         }
 
+        if (creature_on_flat) {
+            w.dst = dst; w.ybuf = ybuf; w.prev_h = prev_h; w.x_side = x_side;
+            w.cx = cx; w.cy = cy;
+            w.t_in = t_in; w.t_out = t_out; w.tcx = tcx; w.tcy = tcy;
+            ACTOR_WALK(&w);
+        }
         if (kind == 0) {
             uint32_t s = INV(t_out);
             int top = HORIZON + (int)(((uint32_t)EYE_H * s) >> (16 - YS));
             if (top < YEND) top = YEND;
             if (top < ybuf) {
                 ROWS(top, p = BLACK);
-                if (ybuf == YEND) return;
+                if (ybuf == YEND) goto done;
             }
             prev_h = 0;
         } else if (kind != DETAIL) {
@@ -614,7 +731,7 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                         if (zi >= h) zi = h - 1;
                         p = vox_wtab[(zi < lift ? plinth : c[zi - lift]) + sf];
                         z += zstep);
-                    if (ybuf == YEND) return;
+                    if (ybuf == YEND) goto done;
                 }
             }
 
@@ -639,7 +756,7 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                     int vx = (ex + (int32_t)(((int64_t)ax * r) >> 32)) >> 16;
                     int vy = (ey + (int32_t)(((int64_t)ay * r) >> 32)) >> 16;
                     p = lit[tex[(vx & 7) * CELL + (vy & 7)]]);
-                if (ybuf == YEND) return;
+                if (ybuf == YEND) goto done;
             }
             prev_h = h;
         } else {
@@ -648,7 +765,7 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
             w.dst = dst; w.ybuf = ybuf; w.prev_h = prev_h; w.x_side = x_side;
             w.cx = cx; w.cy = cy;
             w.t_in = t_in; w.t_out = t_out; w.tcx = tcx; w.tcy = tcy;
-            if (WALK(&w)) return;
+            if (cells[cy][cx].creature_index ? MIXED_WALK(&w) : WALK(&w)) goto done;
             dst = w.dst; ybuf = w.ybuf; prev_h = w.prev_h;
         }
         if (t_out >= T_FAR) break;
@@ -659,6 +776,14 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
         t_in = t_out;
     }
     if (ybuf > YEND) ROWS(YEND, p = BLACK);
+done:
+    for (int row = w.creature_top; row < w.creature_bottom; row++) {
+        unsigned pixel = creature_pixels[row];
+        if (!pixel) continue;
+        uint8_t *at = column_base + row * STRIDE;
+        if (WIDE) *(pair_t *)at = vox_wtab[pixel];
+        else *at = (uint8_t)pixel;
+    }
 }
 
 
@@ -666,12 +791,21 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
 #define RAY(name, wide, ys)                                                    \
     __attribute__((section(".ramtext.walk"), noinline))                        \
     static int name##_walk(walk_t *w) {                                        \
-        return walk(w, wide, ys);                                              \
+        return walk(w, wide, ys, WALK_TERRAIN);                                           \
+    }                                                                         \
+    __attribute__((section(".ramtext.walk"), noinline))                        \
+    static int name##_mixed(walk_t *w) {                                         \
+        return walk(w, wide, ys, WALK_MIXED);                                           \
+    }                                                                         \
+    __attribute__((section(".ramtext.walk"), noinline))                        \
+    static int name##_actor(walk_t *w) {                                       \
+        return walk(w, wide, ys, WALK_CREATURES);                                           \
     }                                                                         \
     __attribute__((section(".ramtext"), noinline))                             \
     static void name(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy, \
                      int32_t tdx, int32_t tdy) {                               \
-        ray(dst, ex, ey, dx, dy, tdx, tdy, wide, ys, name##_walk);              \
+        ray(dst, ex, ey, dx, dy, tdx, tdy, wide, ys,                            \
+            name##_walk, name##_mixed, name##_actor);                            \
     }
 RAY(ray_coarse, 1, 0)
 RAY(ray_wide, 0, 0)
@@ -921,20 +1055,22 @@ static void lens(int flat, int pull, int res) {
     }
 }
 
-void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, int res) {
-    sh2z_sincos(yaw, &job.s, &job.c);
+static void render_view(uint16_t *fb, int32_t x, int32_t y, sh2z_fx_t s, sh2z_fx_t c,
+                        int pull, int flat, int res) {
+    job.s = s;
+    job.c = c;
     lens(flat, pull, res);
 
     /* Forward is (c, s) on the ground, right is (-s, c). The eye is as far
      * back as it is high. */
-    job.ex = (x << 16) - job.c * job.eye_h;
-    job.ey = (y << 16) - job.s * job.eye_h;
+    job.ex = x - c * job.eye_h;
+    job.ey = y - s * job.eye_h;
     job.fb = fb;
 
     MARS_SYS_COMM6 = SECONDARY_GO;
     columns(0);
     while (MARS_SYS_COMM6 == SECONDARY_GO);
-    pieces();
+    if (!bestiary_active) pieces();
     if (arrival_altitude) arrival_hero();
 
     /* Two line offsets per aligned longword. The 112-row modes map
@@ -948,5 +1084,74 @@ void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, 
     }
     uint32_t advance = stride * 0x00010001u;
     for (int k = 0; k < VIEW_H; k++, offsets += advance) lines[k] = offsets;
+}
+
+void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, int res) {
+    sh2z_fx_t s, c;
+    sh2z_sincos(yaw, &s, &c);
+    render_view(fb, x << 16, y << 16, s, c, pull, flat, res);
+}
+
+void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge) {
+    enum { CX = MAP_W / 2, CY = MAP_H / 2 };
+    if (!bestiary_active) {
+        bestiary_active = 1;
+        n_bumped = 0;
+        memset(cells, 0, sizeof cells);
+        for (int y = 0; y < MAP_H; y++) {
+            for (int x = 0; x < MAP_W; x++) {
+                int dx = abs(x - CX), dy = abs(y - CY);
+                int distance = dx > dy ? dx : dy;
+                /* The lunge can reach one tile south of the plinth. */
+                if (distance > 1) distance--;
+                cells[y][x].light = distance > RUN_MAX ? RUN_MAX : (distance ? distance : 1);
+            }
+        }
+        for (int i = 0; i < 2; i++) {
+            pcell_t *pc = &cells[CY + i][CX];
+            pc->m = &bump[i];
+            pc->flat = DETAIL;
+            pc->light = 7;
+        }
+    }
+    memset(bump, 0, 2 * sizeof bump[0]);
+    for (int x = 0; x < CELL; x++) {
+        for (int y = 0; y < CELL; y++) {
+            vcol_t *base = &bump[0].col[x][y];
+            int corner = (x == 0 || x == CELL - 1) && (y == 0 || y == CELL - 1);
+            if (!corner) {
+                base->h = 1;
+                base->c[0] = vox_stone_material;
+            }
+        }
+    }
+    for (int x = 0; x < CELL; x++) {
+        for (int y = 0; y < CELL; y++) {
+            const vcol_t *src = &ent_solid[kind][x][y];
+            if (!src->h) continue;
+            int forward = y + lunge;
+            vcol_t *dst = &bump[forward / CELL].col[x][forward % CELL];
+            if (forward >= CELL) {
+                dst->c[0] = vox_shadow_material;
+                dst->h = 1;
+            }
+            for (int z = 0; z < src->h && dst->h < COL_MAXH; z++)
+                dst->c[dst->h++] = src->c[z];
+        }
+    }
+    sh2z_fx_t s, c;
+    sh2z_sincos(yaw, &s, &c);
+    /* Pan the plinth into the right pane in camera space. Keep the
+     * fractional voxel so its screen position stays fixed as we orbit. */
+    render_view(fb, ((CX * CELL + CELL / 2) << 16) + s * 12,
+                ((CY * CELL + CELL / 2) << 16) - c * 12,
+                s, c, -265, 0, PERSP_RES_FINE);
+}
+
+void persp_bestiary_end(void) {
+    if (!bestiary_active) return;
+    bestiary_active = 0;
+    runs_ready = 0;
+    persp_sync(1);
 }
 #endif

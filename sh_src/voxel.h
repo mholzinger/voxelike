@@ -79,7 +79,12 @@ void vox_defeat_flash(void);
 void vox_release_defeat(void);
 
 /* Camera target for an opponent on a neighboring tile. */
-int vox_duel_target(int *x, int *y);
+typedef struct {
+    uint32_t id;
+    int x, y;       /* animated centre */
+    int dx, dy;     /* direction from hero to opponent, in tiles */
+} vox_duel_t;
+int vox_duel_target(vox_duel_t *shot);
 
 /* A creature struck at the hero: have it jab that way, a moment from now. */
 void vox_jab(uint32_t id);
@@ -90,6 +95,7 @@ int vox_particles_active(void);
 
 /* Have the hero jab toward a neighbouring cell and come back. */
 void vox_hero_lunge(int dx, int dy);
+void vox_hero_turn(int dx, int dy);
 
 /* Clear or start the hero's hit flash. */
 void vox_hero_hit_flash(int on);

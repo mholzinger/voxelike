@@ -108,12 +108,12 @@ endif
 endif
 .DEFAULT_GOAL := all
 BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)
-PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)$(if $(RES),-res$(RES))$(if $(STATS),-stats)$(if $(BENCH),-bench$(BENCH))$(if $(ARMOR),-armor$(ARMOR))$(if $(WEAPON),-weapon$(WEAPON))
+PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)-runtime-camera$(if $(RES),-res$(RES))$(if $(STATS),-stats)$(if $(BENCH),-bench$(BENCH))$(if $(ARMOR),-armor$(ARMOR))$(if $(WEAPON),-weapon$(WEAPON))
 # File times here are whole seconds. A stamp waits one out before it is
 # made, so that it is strictly newer than everything the last build left,
 # and everything that depends on the kind of build is made again.
 BOTOBJS   = port/bot.o sh_src/rogue_plat.o sh_src/m_main.o
-PERSPOBJS = sh_src/rogue_plat.o sh_src/m_main.o sh_src/persp.o sh_src/s_main.o
+PERSPOBJS = sh_src/rogue_plat.o sh_src/m_main.o sh_src/persp.o sh_src/s_main.o sh_src/voxel.o
 $(BOTSTAMP):
 	@mkdir -p $(ROMDIR)
 	@rm -f $(ROMDIR)/.bot-*

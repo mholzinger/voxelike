@@ -135,18 +135,17 @@ renderers draw the plinths.
 The game's main view is drawn by `sh_src/persp.c`: a camera with perspective
 that circles the hero.
 
-The camera keeps its heading as the hero walks through rooms and passages.
-If a wall hides him, it waits for a pause in movement and swings toward a
-clearer view from one of the four map directions. A new direction press
-pauses the swing. The camera checks visibility again from the new tile
-before resuming. Manual camera turns hold off recovery for three seconds.
+The default Fixed angle camera holds its heading while the hero walks. X
+and Z turn it 90 degrees, and holding MODE zooms in. Free orbit can swing
+toward a clearer view when a wall hides the hero. A new direction press
+pauses that swing, and manual camera turns hold off recovery for three seconds.
 
 Up on the D-pad is the map direction nearest to away from the camera.
 A new press uses the angle visible when it begins. A held direction
 keeps its meaning through a swing, and one quick tap can queue during
 a walking or attack animation.
 
-| Pad | Camera |
+| Pad in Free orbit | Camera |
 |---|---|
 | X, Z | swing left and right around the hero |
 | Y, tapped | swing behind the hero, so up on the D-pad is the way he faces |
@@ -245,8 +244,8 @@ not jump. Turning the camera from the flat view tips it back out first.
 
 ## Combat on screen
 
-Rogue reports a fight as text. The renderer shows it by watching the game's
-own data, with no change to Rogue's source:
+Rogue reports a fight as text. The renderer uses the same combat data to
+animate attacks and defeats.
 
 - A bump attack uses the wielded weapon’s own wind-up, contact and
   follow-through. Heavy weapons lift or sweep, and daggers and spears
@@ -254,13 +253,12 @@ own data, with no change to Rogue's source:
 - A monster that strikes at the hero jabs back a moment later. The linker's
   `--wrap=attack` routes Rogue's one call to `attack()` through
   `port/rogue_port.c`, which notes who struck.
-- Whoever takes a hit flashes white. In 3D, a neighboring enemy brings
-  the camera to finishing-shot distance and frames both fighters. It
-  eases back when they separate.
+- Whoever takes a hit flashes white. In Fixed angle, a neighboring enemy
+  brings the camera in and chooses a room-aligned shot based on the matchup.
+  That angle holds during the fight, and the camera eases back when they separate.
 - A monster that is gone from Rogue's monster list died, and its sprite is
   thrown apart as loose voxels that fall, lie a moment and vanish. In 3D,
-  nearby defeats get a short shot that frames both fighters, moves closer,
-  then shows a brief red spray and the opponent's breakup before returning
+  nearby defeats swing behind the hero for the red spray and the opponent's breakup before returning
   to gameplay. A small stain stays on the death tile for the current floor.
 
 ## Player death
@@ -268,8 +266,8 @@ own data, with no change to Rogue's source:
 The camera pushes in to make the hero about 50 percent larger. The fatal
 blow sends out a spray of red voxels while the hero is still standing.
 A beat later, the equipped hero breaks into chunks that keep their model
-colours. The camera
-pulls back while the dungeon fades to black, then Rogue’s headstone shows
+colours. The camera circles the blood pool once over three seconds, then
+pulls back while the dungeon fades to black. Rogue’s headstone shows
 the cause of death and gold. Press Start on the headstone to begin again.
 
 ## Sound
@@ -301,10 +299,14 @@ The numbers are `STEP`, `IDLE_TURN`, `MORE_WAIT` and `MSG_HOLD` in
 
 ## Controls
 
+The main build defaults to the fixed-angle perspective camera. Tap X or Z
+for a 90-degree turn, or hold MODE for a close view. In **A → Options**,
+select **Camera** to toggle between Fixed angle and the original Free orbit.
+
 | Pad | Rogue |
 |---|---|
 | D-pad, 8 directions | move, hold to keep walking. Attack by walking into a monster |
-| A | command menu: inventory, eat, quaff, read, wield, wear, rings, zap, throw, drop, climb, discoveries, quit |
+| A | command menu: inventory, eat, quaff, read, wield, wear, rings, zap, throw, drop, climb, discoveries, options, quit |
 | B | search. In a menu or prompt: back out |
 | C | rest one turn. In a menu: choose. At a yes/no prompt: no |
 | Start | go down stairs when standing on them, otherwise pick up |
@@ -315,6 +317,10 @@ When Rogue asks "which object?" a list of the pack opens. When it asks for a
 direction, use the D-pad. At a yes/no prompt A is yes.
 Item names in the controller lists omit Rogue's inventory letters. When a
 pickup offers a shortcut, A closes the notice and C uses the item shown.
+
+The Bestiary under **A → Options** shows creatures defeated in the current run.
+Browse with Up/Down, turn the model with Left/Right, and press A to see
+its lunge. B returns to Options.
 
 ## Text
 
