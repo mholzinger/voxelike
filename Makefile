@@ -110,7 +110,7 @@ ifeq ($(PERSP),)
 override POLY :=
 endif
 ifneq ($(POLY),)
-SHCCFLAGS += -DPOLY=$(POLY) $(if $(POLY_OFF),-DPOLY_OFF=$(POLY_OFF)) $(if $(POLY_PROF),-DPOLY_PROF)
+SHCCFLAGS += -DPOLY=$(POLY) $(if $(SEGA_STILL),-DSEGA_STILL=$(SEGA_STILL)) $(if $(POLY_OFF),-DPOLY_OFF=$(POLY_OFF)) $(if $(POLY_PROF),-DPOLY_PROF)
 endif
 # make POLYBENCH=1: a room of flat polygons painted by the fill hardware,
 # timed, in rom/polybench.32x. POLYBENCH=2 draws on one SH-2. EYE=n is the
@@ -182,7 +182,7 @@ endif
 endif
 .DEFAULT_GOAL := all
 BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)$(if $(RENDER_TEST),-test$(RENDER_TEST))$(if $(SNAP),-snap$(SNAP))$(if $(TAG),-tag$(TAG))
-PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)-runtime-camera$(if $(FULL_VIEW),-full)$(if $(FOLD_CHECK),-foldcheck)$(if $(RENDER_TEST),-test$(RENDER_TEST))$(if $(RES),-res$(RES))$(if $(STATS),-stats)$(if $(BENCH),-bench$(BENCH))$(if $(ARMOR),-armor$(ARMOR))$(if $(WEAPON),-weapon$(WEAPON))$(if $(POLY),-poly$(POLY))$(if $(POLY_OFF),-off$(POLY_OFF))$(if $(POLY_PROF),-prof)$(if $(SNAP),-snap$(SNAP))$(if $(TAG),-tag$(TAG))$(if $(HALL_NEAR),-hallnear)$(if $(TERRAIN_ROM),-terrainrom)$(if $(FRINGE_ALL),-fringeall)$(if $(HALL_REACH),-reach$(HALL_REACH))$(if $(HALL_POLY),-hallpoly$(HALL_POLY))$(if $(POLYBENCH),-polybench$(POLYBENCH)-$(EYE)-$(COUNT)-$(ACTORS)-$(SPLIT)-$(SOFT)-$(SHATTER)-$(TEX))
+PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)-runtime-camera$(if $(FULL_VIEW),-full)$(if $(FOLD_CHECK),-foldcheck)$(if $(RENDER_TEST),-test$(RENDER_TEST))$(if $(RES),-res$(RES))$(if $(STATS),-stats)$(if $(BENCH),-bench$(BENCH))$(if $(ARMOR),-armor$(ARMOR))$(if $(WEAPON),-weapon$(WEAPON))$(if $(POLY),-poly$(POLY))$(if $(SEGA_STILL),-sega$(SEGA_STILL))$(if $(POLY_OFF),-off$(POLY_OFF))$(if $(POLY_PROF),-prof)$(if $(SNAP),-snap$(SNAP))$(if $(TAG),-tag$(TAG))$(if $(HALL_NEAR),-hallnear)$(if $(TERRAIN_ROM),-terrainrom)$(if $(FRINGE_ALL),-fringeall)$(if $(HALL_REACH),-reach$(HALL_REACH))$(if $(HALL_POLY),-hallpoly$(HALL_POLY))$(if $(POLYBENCH),-polybench$(POLYBENCH)-$(EYE)-$(COUNT)-$(ACTORS)-$(SPLIT)-$(SOFT)-$(SHATTER)-$(TEX))
 # File times here are whole seconds. A stamp waits one out before it is
 # made, so that it is strictly newer than everything the last build left,
 # and everything that depends on the kind of build is made again.

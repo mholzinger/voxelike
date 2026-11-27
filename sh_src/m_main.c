@@ -6,6 +6,7 @@
 #include "polybench.h"
 #include "sfx.h"
 #include "splash.h"
+#include "sega.h"
 #include "sh2zam/sh2zam.h"
 #include "../port/plat.h"
 #include "version.h"
@@ -1027,6 +1028,46 @@ void game_stairs_arrive(void) {
 #endif
 }
 
+/* The logo comes out of the dark at the eye, as a film's title does:
+ * quickly while it is far, slowly for a second while it can be read, and
+ * then past, through the gap between two of its letters. The characters
+ * it is made of stay the size they are. Start cuts it short. */
+__attribute__((unused)) static void sega_logo(void) {
+	/* How much wider it is a vblank later, in 65536ths, at the start and
+	 * end of coming, while it hangs, and as it goes. */
+	enum { COME = 50, HANG = 60, GO = 12, FAST = 7000, SLOW = 300, FASTEST = 44000, LIT = 40 };
+	text_begin();
+	text_commit();
+	sega_light(0);
+	uint32_t start = MARS_SYS_COMM12;
+	int shown = 0;
+	for(;;) {
+		int t = (int)(MARS_SYS_COMM12 - start);
+		if(MARS_SYS_COMM8 & SEGA_CTRL_START) break;
+		uint32_t width = SEGA_SMALL << 16;
+		for(int k = 0; k < t && width < (uint32_t)SEGA_GONE << 16; k++) {
+			int rate = k < COME ? FAST - (FAST - SLOW) * k / COME :
+			           k < COME + HANG ? SLOW : SLOW + (FASTEST - SLOW) * (k - COME - HANG) / GO;
+			width += (width >> 16) * (uint32_t)rate + ((width & 0xFFFF) * (uint32_t)rate >> 16);
+		}
+		int w = (int)(width >> 16);
+		if(w >= SEGA_GONE) break;
+		if(w == shown) {
+			wait_vblank();
+			continue;
+		}
+		sega_draw(w);
+		sega_light(t * 31 / LIT);
+		swapBuffers();
+		shown = w;
+	}
+	/* And black, for the title to come up out of. A press that cut it
+	 * short is not a press at the title. */
+	sega_draw(SEGA_GONE);
+	swapBuffers();
+	while(MARS_SYS_COMM8 & SEGA_CTRL_START) wait_vblank();
+}
+
 static void title_screen(void) {
 	const unsigned last = splash_title_frame();
 	splash_palette_init();
@@ -1141,6 +1182,21 @@ int m_main(void) {
 
 #ifdef POLYBENCH
 	polybench_run();
+#endif
+#ifdef SEGA_STILL
+	/* The logo and nothing else, to be looked at: 1 for all of it, and
+	 * more than that for it at that width. */
+	if(SEGA_STILL > 1) {
+		sega_light(31);
+		sega_draw(SEGA_STILL);
+		swapBuffers();
+	} else {
+		sega_logo();
+	}
+	for(;;) wait_vblank();
+#endif
+#if !defined(BOT) && !defined(BENCH) && !defined(SNAP)
+	sega_logo();
 #endif
 	/* The moment Start goes down seeds the dungeon. */
 	title_screen();
