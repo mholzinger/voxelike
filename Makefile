@@ -79,9 +79,67 @@ RGFLAGS = -m2 -mb -O2 -fomit-frame-pointer -ffreestanding -Iport/include -Irogue
 #                   hero standing in it, and the camera going round him. Each
 #                   turn of the camera is the same 256 frames, and the yellow
 #                   line gives the mean and worst time to draw one of them
+#   make FULL_VIEW=1   rays cross the whole map during play. Without it they
+#                   stop two cells outside the room the hero is in (or two
+#                   cells round him in a passage or a dark room)
+#   make RENDER_TEST=n   timing by a bot in dungeon n: up to 32 frames each
+#                   in rooms, passages and fights, every one drawn twice,
+#                   without the creatures and with them. The yellow lines
+#                   give the mean of each. Add FULL_VIEW=1 to compare
 PERSP ?= 1
+ifdef RENDER_TEST
+override BOT := 1
+override STATS := 1
+SHCCFLAGS += -DRENDER_TEST=$(RENDER_TEST)
+RGFLAGS   += -DRENDER_TEST=$(RENDER_TEST)
+endif
+ifdef FOLD_CHECK
+SHCCFLAGS += -DFOLD_CHECK
+endif
+ifdef FULL_VIEW
+SHCCFLAGS += -DFULL_VIEW
+endif
 ifdef FLAT
 override PERSP :=
+endif
+# make POLY=1: the hero's lit room is drawn as flat polygons (sh_src/poly.c).
+# Passages, dark rooms and the scripted scenes are still drawn by the rays.
+ifdef POLY
+SHCCFLAGS += -DPOLY=$(POLY) $(if $(POLY_OFF),-DPOLY_OFF=$(POLY_OFF)) $(if $(POLY_PROF),-DPOLY_PROF)
+endif
+# make POLYBENCH=1: a room of flat polygons painted by the fill hardware,
+# timed, in rom/polybench.32x. POLYBENCH=2 draws on one SH-2. EYE=n is the
+# camera's height and distance, 128 (near, the default) to 208 (pulled back).
+# ACTORS=n stands n creatures in the room, 5 unless given, up to 8.
+# POLYBENCH=3 has each SH-2 draw its side of column SPLIT (160 unless given),
+# writing spans itself; SOFT=1 writes spans that way with one SH-2 drawing.
+# A creature goes to pieces every 48 frames; SHATTER=0 leaves that out.
+# TEX=1 with POLYBENCH=3 gives the floor a bitmap, sampled once a column;
+# TEX=2 samples it once a pixel.
+ifdef POLYBENCH
+TARGET := $(ROMDIR)/polybench
+SHCCFLAGS += -DPOLYBENCH=$(POLYBENCH) -DPOLYBENCH_EYE=$(if $(EYE),$(EYE),128) $(if $(COUNT),-DPOLYBENCH_COUNT) $(if $(ACTORS),-DPOLYBENCH_ACTORS=$(ACTORS)) $(if $(SPLIT),-DPOLYBENCH_SPLIT=$(SPLIT)) $(if $(SHATTER),-DPOLYBENCH_SHATTER=$(SHATTER)) $(if $(SOFT),-DPOLYBENCH_SOFT) $(if $(TEX),-DPOLYBENCH_TEX=$(TEX))
+endif
+# make HALL_NEAR=1: in a passage the rays stop two cells from the hero, as
+# they did, and not at the ends of the passage.
+ifdef HALL_NEAR
+SHCCFLAGS += -DHALL_NEAR
+endif
+# TERRAIN_ROM=1: the terrain models stay in the ROM and are read from it.
+ifdef TERRAIN_ROM
+SHCCFLAGS += -DTERRAIN_ROM
+endif
+# FRINGE_ALL=1: rock lines every passage found, not only those near the hero.
+ifdef FRINGE_ALL
+SHCCFLAGS += -DFRINGE_ALL
+endif
+# HALL_REACH=n: how many cells of a passage the rays see either side of the
+# hero, before the border of two more.
+ifdef HALL_REACH
+SHCCFLAGS += -DHALL_REACH=$(HALL_REACH)
+endif
+ifdef HALL_POLY
+SHCCFLAGS += -DHALL_POLY=$(HALL_POLY)
 endif
 ifdef BENCH
 override PERSP := 2
@@ -93,6 +151,17 @@ SHCCFLAGS += -DSHOW_ARMOR=$(ARMOR)
 endif
 ifdef WEAPON
 SHCCFLAGS += -DSHOW_WEAPON=$(WEAPON)
+endif
+# make SNAP=1: the renderer is shown the level tools/snap.py took out of a
+# save state, to time one view before and after a change. SNAP=2: the level
+# tools/testlevel.py makes, with every case there is to draw, the hero at
+# each of its stations in turn: tools/snapbench.py times each.
+# It drives itself and ends on a table of each station's median and worst
+# ticks, for a machine with no debugger. TAG=name puts a name on the table.
+ifdef SNAP
+override STATS := 1
+RGFLAGS   += -DSNAP=$(SNAP)
+SHCCFLAGS += -DSNAP=$(SNAP) $(if $(TAG),-DSNAP_TAG=$(TAG))
 endif
 ifdef BOT
 RGFLAGS   += -DBOT
@@ -107,13 +176,13 @@ $(error RES must be 0 (160x112), 1 (320x112), or 2 (320x224))
 endif
 endif
 .DEFAULT_GOAL := all
-BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)
-PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)-runtime-camera$(if $(RES),-res$(RES))$(if $(STATS),-stats)$(if $(BENCH),-bench$(BENCH))$(if $(ARMOR),-armor$(ARMOR))$(if $(WEAPON),-weapon$(WEAPON))
+BOTSTAMP := $(ROMDIR)/.bot-$(if $(BOT),on,off)$(if $(RENDER_TEST),-test$(RENDER_TEST))$(if $(SNAP),-snap$(SNAP))$(if $(TAG),-tag$(TAG))
+PERSPSTAMP := $(ROMDIR)/.persp-$(if $(PERSP),$(PERSP),off)-runtime-camera$(if $(FULL_VIEW),-full)$(if $(FOLD_CHECK),-foldcheck)$(if $(RENDER_TEST),-test$(RENDER_TEST))$(if $(RES),-res$(RES))$(if $(STATS),-stats)$(if $(BENCH),-bench$(BENCH))$(if $(ARMOR),-armor$(ARMOR))$(if $(WEAPON),-weapon$(WEAPON))$(if $(POLY),-poly$(POLY))$(if $(POLY_OFF),-off$(POLY_OFF))$(if $(POLY_PROF),-prof)$(if $(SNAP),-snap$(SNAP))$(if $(TAG),-tag$(TAG))$(if $(HALL_NEAR),-hallnear)$(if $(TERRAIN_ROM),-terrainrom)$(if $(FRINGE_ALL),-fringeall)$(if $(HALL_REACH),-reach$(HALL_REACH))$(if $(HALL_POLY),-hallpoly$(HALL_POLY))$(if $(POLYBENCH),-polybench$(POLYBENCH)-$(EYE)-$(COUNT)-$(ACTORS)-$(SPLIT)-$(SOFT)-$(SHATTER)-$(TEX))
 # File times here are whole seconds. A stamp waits one out before it is
 # made, so that it is strictly newer than everything the last build left,
 # and everything that depends on the kind of build is made again.
-BOTOBJS   = port/bot.o sh_src/rogue_plat.o sh_src/m_main.o
-PERSPOBJS = sh_src/rogue_plat.o sh_src/m_main.o sh_src/persp.o sh_src/s_main.o sh_src/voxel.o
+BOTOBJS   = port/bot.o port/rogue_port.o sh_src/rogue_plat.o sh_src/m_main.o
+PERSPOBJS = sh_src/rogue_plat.o sh_src/m_main.o sh_src/persp.o sh_src/s_main.o sh_src/voxel.o sh_src/polybench.o sh_src/poly.o
 $(BOTSTAMP):
 	@mkdir -p $(ROMDIR)
 	@rm -f $(ROMDIR)/.bot-*
@@ -151,7 +220,7 @@ FRAMES ?= 180
 # command line.
 MISTER ?= root@mister.local
 
-.PHONY: all release debug shot deploy ship clean
+.PHONY: all release debug shot deploy ship clean snaproms
 
 all: release
 
@@ -215,7 +284,7 @@ $(TARGET).32x: $(TARGET).elf
 	@dd if=$(ROMDIR)/temp.32x of=$@ bs=8192 conv=sync 2>/dev/null
 	@rm -f $(ROMDIR)/temp.32x
 
-$(TARGET).elf: $(SHOBJS) Makefile | $(ROMDIR)
+$(TARGET).elf: $(SHOBJS) Makefile sh_src/mars.ld | $(ROMDIR)
 	$(SHCC) $(SHLDFLAGS) $(SHOBJS) -o $@ $(SHLIBS)
 
 # Materials and creature sprites, baked from the art in models/
@@ -224,6 +293,19 @@ sh_src/baked.h: models/materials.txt models/creatures.txt models/terrain.txt too
 	@python3 tools/bake_models.py --header $@
 
 sh_src/voxel.o: sh_src/baked.h
+
+# The terrain models, made here and kept in the ROM: they were 39K of the
+# SH-2's memory when the game made them as it started.
+HOSTCC ?= cc
+$(ROMDIR)/bake_terrain: tools/bake_terrain.c sh_src/terrain.h sh_src/voxel.h sh_src/baked.h | $(ROMDIR)
+	@echo "HOSTCC $<"
+	@$(HOSTCC) -O1 -w -iquote sh_src -o $@ $<
+
+sh_src/baked_terrain.h: $(ROMDIR)/bake_terrain
+	@echo "BAKE $@"
+	@$(ROMDIR)/bake_terrain > $@
+
+sh_src/voxel.o: sh_src/baked_terrain.h
 
 sh_src/baked3d.h: models/materials.txt models/creatures.txt models/gear.txt tools/bake_models.py
 	@echo "BAKE $@"
@@ -265,6 +347,16 @@ sh_src/%.o: sh_src/%.c
 	@$(SHCC) $(SHCCFLAGS) $(SHEXTRA) -MMD -MP -c $< -o $@
 
 # Release what is on development: see tools/ship.sh
+# The two ROMs to time on a machine: the self-driving test level with the
+# terrain models in memory and with them in the ROM. Each ends on a table
+# that says which it is. The game's own ROM is put back afterwards.
+snaproms:
+	$(MAKE) SNAP=2 POLY=2 TAG=RAM
+	cp $(ROMDIR)/voxelike.32x $(ROMDIR)/snap-ram.32x
+	$(MAKE) SNAP=2 POLY=2 TERRAIN_ROM=1
+	cp $(ROMDIR)/voxelike.32x $(ROMDIR)/snap-rom.32x
+	$(MAKE) POLY=2
+
 ship:
 	@YES=$(YES) tools/ship.sh
 
@@ -272,6 +364,6 @@ clean:
 	rm -f $(MDOBJS) $(SHOBJS) $(MDOBJS:.o=.d) $(SHOBJS:.o=.d)
 	rm -f $(MDTARGET).bin $(MDTARGET).elf $(MDTARGET).lst
 	rm -f $(TARGET).32x $(TARGET).elf $(TARGET).lst
-	rm -f sh_src/baked.h sh_src/version.h sh_src/splash_frames.h
+	rm -f sh_src/baked.h sh_src/baked_terrain.h sh_src/version.h sh_src/splash_frames.h
 
 -include $(MDOBJS:.o=.d) $(SHOBJS:.o=.d)

@@ -212,6 +212,48 @@ save_game()
     msg("this dungeon cannot be saved yet");
 }
 
+#ifdef SNAP
+/* make SNAP=1: the level in port/snap_data.h, which tools/snap.py takes
+ * out of a save state, is what the renderer is shown, whatever is played.
+ * make SNAP=2: the level in port/snap_test.h, which tools/testlevel.py
+ * makes, with every case the renderers have to draw. The hero is stood at
+ * each of the level's stations in turn. See tools/snapbench.py. */
+#if SNAP == 2
+#include "snap_test.h"
+#else
+#include "snap_data.h"
+#endif
+static unsigned char snap_now[NUMLINES * NUMCOLS];
+int snap_at = -1;
+
+/*
+ * rogue_snap_station:
+ *	Stand the hero at a station of the level. TRUE if he was not
+ *	there already.
+ */
+int
+rogue_snap_station(int n)
+{
+    n %= SNAP_STATIONS;
+    if (n == snap_at)
+	return FALSE;
+    snap_at = n;
+    memcpy(snap_now, snap_screen, sizeof snap_now);
+    snap_now[snap_stations[n][1] * NUMCOLS + snap_stations[n][0]] = '@';
+    return TRUE;
+}
+
+/*
+ * rogue_snap_name:
+ *	What a station of the level is called, NULL past the last.
+ */
+const char *
+rogue_snap_name(int n)
+{
+    return n < SNAP_STATIONS ? snap_names[n] : NULL;
+}
+#endif
+
 /*
  * rogue_screen:
  *	The cells of the main screen, for the renderer.
@@ -219,7 +261,13 @@ save_game()
 const unsigned char *
 rogue_screen(void)
 {
+#ifdef SNAP
+    if (snap_at < 0)
+	rogue_snap_station(0);
+    return snap_now;
+#else
     return stdscr->_cells;
+#endif
 }
 
 /*
@@ -232,6 +280,15 @@ rogue_under(int x, int y)
 {
     if (x < 0 || x >= NUMCOLS || y < 1 || y >= NUMLINES - 1)
 	return ' ';
+#ifdef SNAP
+    {
+	/* The level is no more than is on the screen, which has what
+	 * the hero stands on where he stands, and what else stands
+	 * anywhere stands on floor. */
+	int ch = snap_screen[y * NUMCOLS + x] & 0x7F;
+	return (ch >= 'A' && ch <= 'Z') ? '.' : ch;
+    }
+#endif
     return chat(y, x);
 }
 
@@ -356,6 +413,9 @@ rogue_ground(int x, int y)
 
     if (x < 0 || x >= NUMCOLS || y < 1 || y >= NUMLINES - 1)
 	return 0;
+#ifdef SNAP
+    return snap_lift[y * NUMCOLS + x];
+#endif
     if ((h = room_height(x, y)) != 0)
 	return h;
     h = room_height(x - 1, y);
@@ -560,6 +620,18 @@ rogue_room(int *r)
 {
     struct room *rp = proom;
 
+#ifdef SNAP
+    {
+	const unsigned char *at = snap_stations[snap_at < 0 ? 0 : snap_at];
+	int i;
+
+	if (!at[2])
+	    return FALSE;
+	for (i = 0; i < 4; i++)
+	    r[i] = at[3 + i];
+	return TRUE;
+    }
+#endif
     if (rp == NULL || (rp->r_flags & (ISGONE | ISDARK)) || on(player, ISBLIND))
 	return FALSE;
     r[0] = rp->r_pos.x;

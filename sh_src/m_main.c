@@ -1,7 +1,9 @@
 #include "mars.h"
 #include "voxel.h"
 #include "text.h"
+#include "minimap.h"
 #include "persp.h"
+#include "polybench.h"
 #include "sfx.h"
 #include "splash.h"
 #include "sh2zam/sh2zam.h"
@@ -60,8 +62,77 @@ __attribute__((used)) volatile uint16_t game_render_ticks;
 uint16_t persp_yaw = 0xC000;
 int camera_yaw_settled = 1;
 
+#ifdef SNAP
+/* A SNAP build plays nothing and needs no hand on the pad. It stands the
+ * hero at each station of the baked level, lets the level fold in for
+ * SNAP_SETTLE frames, then turns the camera once round him in SNAP_TURN
+ * frames and keeps the time each took to draw. The turn is counted in
+ * frames drawn, not in vblanks, so an emulator and the machine time the
+ * same pictures. After the last station the HUD shows the table, and
+ * tools/snapbench.py reads it out of memory. */
+enum { SNAP_SETTLE = 16, SNAP_TURN = 128, SNAP_MOST = 16 };
+typedef struct { uint16_t median, worst; } snap_result_t;
+__attribute__((used)) snap_result_t snap_result[SNAP_MOST];
+__attribute__((used)) int snap_done;   /* stations timed, once all of them are */
+#ifdef POLY_PROF
+/* What poly.c's timers came to at each station, over its timed frames. */
+enum { SNAP_PROF_KINDS = 9 };
+extern uint32_t poly_prof[SNAP_PROF_KINDS];
+__attribute__((used)) uint32_t snap_prof[SNAP_MOST][SNAP_PROF_KINDS];
+#endif
+
+static void snap_drive(void) {
+	static uint16_t ticks[SNAP_TURN];
+	static int station, frame = -1;
+	if(snap_done) return;
+
+	/* The frame before this one is the one there is a time for. */
+	if(frame >= SNAP_SETTLE) ticks[frame - SNAP_SETTLE] = game_render_ticks;
+	if(++frame == SNAP_SETTLE + SNAP_TURN) {
+		for(int i = 1; i < SNAP_TURN; i++) {
+			uint16_t t = ticks[i];
+			int j = i;
+			for(; j && ticks[j - 1] > t; j--) ticks[j] = ticks[j - 1];
+			ticks[j] = t;
+		}
+		snap_result[station].median = ticks[SNAP_TURN / 2];
+		snap_result[station].worst = ticks[SNAP_TURN - 1];
+#ifdef POLY_PROF
+		for(int k = 0; k < SNAP_PROF_KINDS; k++) snap_prof[station][k] = poly_prof[k];
+#endif
+		frame = 0;
+		if(++station == SNAP_MOST || !rogue_snap_name(station)) {
+			snap_done = station;
+			return;
+		}
+	}
+#ifdef POLY_PROF
+	if(frame == SNAP_SETTLE) for(int k = 0; k < SNAP_PROF_KINDS; k++) poly_prof[k] = 0;
+#endif
+	if(rogue_snap_station(station)) plat_screen_changed = 1;
+	/* Each timed frame looks a step on from the one before, so none is
+	 * the picture already on screen; the last looks north again. */
+	int step = frame < SNAP_SETTLE ? 0 : frame - SNAP_SETTLE + 1;
+	persp_yaw = (uint16_t)(0xC000 + step * (0x10000 / SNAP_TURN));
+}
+#endif
+
 /* For the HUD of a measuring build. */
 uint16_t perf_fps, perf_mean, perf_worst;
+
+#ifdef RENDER_TEST
+/* A timing build draws each sampled frame twice with the same world, pose
+ * and camera: once without the creatures, then with them. The first 32
+ * pairs in rooms, in passages and in fights are kept, so the readout stays
+ * after the bot has moved on. */
+enum { TEST_SAMPLES = 32 };
+typedef struct { uint16_t count, full, terrain; } test_result_t;
+test_result_t test_render_result[3];
+static uint32_t test_render_sums[3][2];
+/* How long folding in Rogue's screen takes after a step in a passage. */
+uint16_t test_hall_updates, test_hall_update_ticks;
+static uint32_t test_hall_update_sum;
+#endif
 
 /* The camera's buttons.
  *   X, Z            swing it round the hero
@@ -523,8 +594,26 @@ void game_frame(void) {
 	stage_defeat = PERSP == 1 && !manual && !cam_flat && !cam_pull && !flat_wanted &&
 	               camera_yaw_settled;
 #endif
+#if defined(SNAP) && defined(PERSP)
+	snap_drive();
+#endif
 	int screen_changed = plat_screen_changed;
-	if(screen_changed) load_dungeon_screen(stage_defeat);
+#ifdef RENDER_TEST
+	uint16_t load_begin = frt_read();
+#endif
+	if(screen_changed) {
+		load_dungeon_screen(stage_defeat);
+		minimap_changed();
+	}
+	minimap_update(rogue_screen());
+#ifdef RENDER_TEST
+	if(screen_changed && test_hall_updates < TEST_SAMPLES &&
+	   rogue_under(vox_hero_cx, vox_hero_cy) == '#') {
+		test_hall_update_sum += (uint16_t)(frt_read() - load_begin);
+		test_hall_updates++;
+		test_hall_update_ticks = test_hall_update_sum / test_hall_updates;
+	}
+#endif
 	if(blanked) {
 		vox_palette(VOX_FULL_LIGHT);
 		blanked = 0;
@@ -570,7 +659,9 @@ void game_frame(void) {
 		uint16_t yaw;
 	} shown;
 #endif
+#ifndef SNAP
 	if(!fixed_camera) camera_buttons(0);
+#endif
 	if(PERSP > 1) persp_yaw += 0x100;   /* PERSP=2 turns by itself, for measuring */
 
 	int is_flat = (cam_flat == 256 && persp_yaw == NORTH && cam_pull == 0);
@@ -583,7 +674,12 @@ void game_frame(void) {
 
 	int enemy_x, enemy_y;
 	if(vox_defeat_target(&enemy_x, &enemy_y)) play_defeat(enemy_x, enemy_y);
+#ifdef SNAP
+	/* The fight camera would hold the view where the turn wants it moved. */
+	update_duel(camera_steps, 1);
+#else
 	update_duel(camera_steps, PERSP != 1 || first || manual || cam_flat || cam_pull || flat_wanted);
+#endif
 #if !defined(STATS)
 	if(is_flat) shown.valid = 0;
 #endif
@@ -629,9 +725,31 @@ void game_frame(void) {
 		shown.res = cam_res;
 #endif
 
+#ifdef RENDER_TEST
+		int scene = duel_mix ? 2 : rogue_under(vox_hero_cx, vox_hero_cy) == '#' ? 1 : 0;
+		test_result_t *result = &test_render_result[scene];
+		int sample = result->count < TEST_SAMPLES;
+		unsigned terrain_ticks = 0;
+		if(sample) {
+			persp_test_actors(0);
+			uint16_t start = frt_read();
+			persp_render_gameplay((uint16_t *)&MARS_FRAMEBUFFER, px, py, view_yaw, pull, cam_flat, cam_res);
+			terrain_ticks = (uint16_t)(frt_read() - start);
+			persp_test_actors(1);
+		}
+#endif
 		uint16_t p0 = frt_read();
-		persp_render((uint16_t *)&MARS_FRAMEBUFFER, px, py, view_yaw, pull, cam_flat, cam_res);
+		persp_render_gameplay((uint16_t *)&MARS_FRAMEBUFFER, px, py, view_yaw, pull, cam_flat, cam_res);
 		game_render_ticks = (uint16_t)(frt_read() - p0);
+#ifdef RENDER_TEST
+		if(sample) {
+			result->count++;
+			test_render_sums[scene][0] += game_render_ticks;
+			test_render_sums[scene][1] += terrain_ticks;
+			result->full = test_render_sums[scene][0] / result->count;
+			result->terrain = test_render_sums[scene][1] / result->count;
+		}
+#endif
 		swapBuffers();
 
 		/* Once a second: frames shown, and the mean and worst time to draw one. */
@@ -912,7 +1030,7 @@ void game_stairs_arrive(void) {
 static void title_screen(void) {
 	const unsigned last = splash_title_frame();
 	splash_palette_init();
-#if !defined(BOT) && !defined(BENCH)
+#if !defined(BOT) && !defined(BENCH) && !defined(SNAP)
 	uint32_t start = MARS_SYS_COMM12;
 	unsigned shown = last;
 	while(!(MARS_SYS_COMM8 & SEGA_CTRL_START)) {
@@ -934,7 +1052,7 @@ static void title_screen(void) {
 	text_put(14, 18, "PRESS START", -1, TEXT_WHITE, 0);
 	text_put((TEXT_W - (int)sizeof VERSION + 1) / 2, 24, VERSION, -1, TEXT_WHITE, 0);
 	text_commit();
-#if defined(BOT) || defined(BENCH)
+#if defined(BOT) || defined(BENCH) || defined(SNAP)
 	/* Nobody is there to press it. */
 	for(uint32_t t = MARS_SYS_COMM12; MARS_SYS_COMM12 - t < 120 && !(MARS_SYS_COMM8 & SEGA_CTRL_START); );
 #else
@@ -961,7 +1079,7 @@ static void enter_dungeon(void) {
 	}
 #endif
 
-#if defined(PERSP) && !defined(BOT) && !defined(BENCH)
+#if defined(PERSP) && !defined(BOT) && !defined(BENCH) && !defined(SNAP)
 	extern int game_entry_direction(void);
 	enum { DIVE = 27, RISE = 46, PULL_BACK = 28, CLOSEST = -200 };
 	const int pull_at = DIVE + RISE;
@@ -1021,6 +1139,9 @@ int m_main(void) {
 	persp_init();
 #endif
 
+#ifdef POLYBENCH
+	polybench_run();
+#endif
 	/* The moment Start goes down seeds the dungeon. */
 	title_screen();
 	rogue_start();

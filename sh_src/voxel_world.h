@@ -4,20 +4,36 @@
 #include "voxel.h"
 
 /* The world as voxel.c holds it, for another renderer to read. */
-#define VOX_MODELS_MAX 31                  /* room for every terrain model */
+#define VOX_MODELS_MAX 38                  /* room for every terrain model */
 #define VOX_AIR_GAP 0xff                   /* marker between terrain and a jumping model */
-extern vmodel_t vox_models[];
+/* The terrain models are made when the ROM is built (terrain.h). make
+ * TERRAIN_ROM=1 leaves them in the ROM, which is 39K of memory the game
+ * does not use but slower to read; otherwise they are copied out of it
+ * as the game starts, like anything else that is given a value. */
+#ifdef TERRAIN_ROM
+#define TERRAIN_KEPT const
+#else
+#define TERRAIN_KEPT
+#endif
+extern TERRAIN_KEPT vmodel_t vox_models[];
 extern const int vox_model_count;
 extern uint8_t vox_tile[MAP_H][MAP_W];     /* index into vox_models */
 extern uint8_t vox_light[MAP_H][MAP_W];    /* top-face shade 0..7 */
 extern uint8_t vox_lift[MAP_H][MAP_W];     /* voxels of plinth under the model */
-extern uint8_t vox_plinth[];               /* plinth material, by model index */
+extern TERRAIN_KEPT uint8_t vox_plinth[];              /* plinth material, by model index */
+/* A wall's cap as a whole cell of it, column by column as a model has
+ * them, and whether a model is a wall: every wall is part of this. */
+extern TERRAIN_KEPT uint8_t vox_wall_cap[CELL * CELL];
+int vox_is_wall(unsigned tile);
 extern uint16_t vox_wtab[256];             /* CRAM index -> doubled pixel word */
 extern const uint8_t vox_shadow_material;
 extern const uint8_t vox_stone_material;
 extern const uint8_t vox_blood_material;
 extern const uint8_t vox_front_shade[8];   /* shade of a side under a top's light */
 int vox_stair_at(int cx, int cy);
+/* The box of cells whose terrain has changed since this was last asked, as
+ * x0 y0 x1 y1. Zero if none has. */
+int vox_changed_cells(int box[4]);
 
 /* Temporary terrain for the handful of tiles assembling during a step. */
 const vmodel_t *vox_assembly_model(int cx, int cy);

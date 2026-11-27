@@ -97,9 +97,9 @@ M68K_CODE:
 ! Master Vector Base Table at 0x06000000
 
 		.long   mstart      /* Cold Start PC */
-		.long   0x0603F000  /* Cold Start SP 0x0603F000*/
+		.long   __stack     /* Cold Start SP */
 		.long   mstart      /* Manual Reset PC */
-		.long   0x0603F000  /* Manual Reset SP */
+		.long   __stack     /* Manual Reset SP */
 		.long   main_err    /* Illegal instruction */
 		.long   0x00000000  /* reserved */
 		.long   main_err    /* Invalid slot instruction */
@@ -154,9 +154,9 @@ M68K_CODE:
 ! Slave Vector Base Table at 0x06000120
 
 		.long   sstart      /* Cold Start PC */
-		.long   0x06040000  /* Cold Start SP */
+		.long   __slave_stack /* Cold Start SP */
 		.long   sstart      /* Manual Reset PC */
-		.long   0x06040000  /* Manual Reset SP */
+		.long   __slave_stack /* Manual Reset SP */
 		.long   slav_err    /* Illegal instruction */
 		.long   0x00000000  /* reserved */
 		.long   slav_err    /* Invalid slot instruction */
@@ -301,7 +301,7 @@ mcont:
 _master_int_clr:
 		.long   0x2000401E  /* one word passed last int clr reg */
 _master_stk:
-		.long   0x0603F000  /* Cold Start SP */
+		.long   __stack     /* Cold Start SP */
 _master_sts:
 		.long   0x20004020
 _master_ok:
@@ -365,7 +365,7 @@ scont:
 _slave_int_clr:
 		.long   0x2000401E  /* one word passed last int clr reg */
 _slave_stk:
-		.long   0x06040000  /* Cold Start SP */
+		.long   __slave_stack /* Cold Start SP */
 _slave_sts:
 		.long   0x20004024
 _slave_ok:
@@ -512,7 +512,7 @@ main_vres_irq:
 mvri_mars_adapter:
 		.long   0x20004000
 mvri_master_stk:
-		.long   0x0603F000  /* Cold Start SP */
+		.long   __stack     /* Cold Start SP */
 mvri_master_vres:
 		.long   main_reset
 
@@ -651,7 +651,7 @@ slav_vres_irq:
 svri_mars_adapter:
 		.long   0x20004000
 svri_slave_stk:
-		.long   0x06040000  /* Cold Start SP */
+		.long   __slave_stack /* Cold Start SP */
 svri_slave_vres:
 		.long   slav_reset
 

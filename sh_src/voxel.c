@@ -3,25 +3,15 @@
 #include "voxel.h"
 #include "voxel_world.h"
 #include "baked.h"
+#include "terrain.h"
+/* The terrain models and what is known of each, made when the ROM is
+ * built and kept in it: tools/bake_terrain.c. */
+#include "baked_terrain.h"
 
 /* --- Materials ------------------------------------------------------
  * CRAM is laid out as material * 8 + shade, shade 7 brightest. Material 0
  * is reserved so index 0 stays the transparent void. The materials
  * themselves come from vox_models/materials.txt by way of baked.h. */
-#define N_SHADES 8
-#define MAT(n)   ((n) * N_SHADES)
-
-/* --- Terrain vox_models ------------------------------------------------- */
-enum {
-    M_VOID, M_FLOOR, M_FLOOR2, M_WALL, M_DOOR_H, M_DOOR_V,
-    M_PASSAGE, M_STAIRS, M_TRAP, M_GOLD, M_POTION, M_SCROLL, M_FOOD, M_WEAPON,
-    M_ARMOR, M_RING, M_STICK, M_AMULET, M_MAGIC,
-    M_ROCK_EDGE, M_ROCK_CORNER = M_ROCK_EDGE + 4,
-    M_ROCK_JOIN = M_ROCK_CORNER + 4,
-    M_COUNT = M_ROCK_JOIN + 4
-};
-
-vmodel_t vox_models[M_COUNT];
 typedef char models_fit[M_COUNT <= VOX_MODELS_MAX ? 1 : -1];
 const int vox_model_count = M_COUNT;
 uint16_t vox_wtab[256];              /* CRAM index -> doubled pixel word */
@@ -131,11 +121,6 @@ static const int8_t lunge_reach[LUNGE + 1] = { 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 
 #define LIGHT_DIM     3    /* seen before, not in view now */
 #define LIGHT_MEMORY  2    /* seen before, and Rogue has stopped showing it */
 
-/* How high the ground of each cell stands, from the game, taken in once per
- * level. Rooms stand on plinths of different heights and passages run
- * between them at ground level. */
-#define STAIR_DROP  2      /* the stairs' cell is this much lower than its room */
-
 /* A front face is darker than the top face lit by the same light. */
 const uint8_t vox_shadow_material = MAT(MT_SHADOW);
 const uint8_t vox_stone_material = MAT(MT_STONE);
@@ -177,137 +162,35 @@ static uint8_t dirty_lo[2][MAP_W], dirty_hi[2][MAP_W];
 #define AHEAD_PER_FRAME  8
 #define AHEAD_REACH      24
 
-static void col_set(vcol_t *c, int h, uint8_t mat) {
-    c->h = (uint8_t)h;
-    for (int z = 0; z < h; z++) c->c[z] = mat;
-}
-
-/* Pile n more voxels of one material on every column in a footprint. */
-static void stack(vmodel_t *m, int x0, int x1, int y0, int y1, int n, uint8_t mat) {
-    for (int lx = x0; lx <= x1; lx++) {
-        for (int ly = y0; ly <= y1; ly++) {
-            vcol_t *c = &m->col[lx][ly];
-            for (int i = 0; i < n && c->h < COL_MAXH; i++) c->c[c->h++] = mat;
-        }
-    }
-}
-
 /* Clockwise from north, shared by the rock mesh and adjacency pass. */
 static const int8_t edge_x[] = { 0, 1, 0, -1 };
 static const int8_t edge_y[] = { -1, 0, 1, 0 };
 
-static void build_models(void) {
-    memset(vox_models, 0, sizeof(vox_models));
-
-    for (int lx = 0; lx < CELL; lx++) {
-        for (int ly = 0; ly < CELL; ly++) {
-            int speck = ((lx * 5 + ly * 3) ^ (lx * ly)) & 3;
-
-            col_set(&vox_models[M_FLOOR].col[lx][ly], 1,
-                    terrain_floor[ly][lx]);
-            col_set(&vox_models[M_FLOOR2].col[lx][ly], 1,
-                    terrain_floor[ly][(CELL - lx) & (CELL - 1)]);
-            col_set(&vox_models[M_PASSAGE].col[lx][ly], 1,
-                    speck ? MAT(MT_DIRT) : MAT(MT_DIRT2));
-
-            /* A single brick course and cap on every side of a room. */
-            vcol_t *w = &vox_models[M_WALL].col[lx][ly];
-            col_set(w, 2, MAT(MT_BRICKB));
-            w->c[1] = terrain_wall_cap[ly][lx];
-
-            /* The stone jambs line up with the wall caps around the threshold. */
-            vcol_t *dh = &vox_models[M_DOOR_H].col[lx][ly];
-            vcol_t *dv = &vox_models[M_DOOR_V].col[lx][ly];
-            col_set(dh, 1, MAT(MT_WOOD));
-            col_set(dv, 1, MAT(MT_WOOD));
-            if (lx == 0 || lx == CELL - 1) *dh = *w;
-            if (ly == 0 || ly == CELL - 1) *dv = *w;
-
-            /* Steps going down to the right, from the level of the floor
-             * around them into the pit their cell is sunk into. */
-            int step = lx >> 1;
-            col_set(&vox_models[M_STAIRS].col[lx][ly], STAIR_DROP + 1 - step,
-                    (step & 1) ? MAT(MT_STAIR) : MAT(MT_CAP));
-        }
-    }
-
-    /* Things lying on the floor. */
-    for (int m = M_TRAP; m < M_ROCK_EDGE; m++) vox_models[m] = vox_models[M_FLOOR];
-
-    for (int x = 0; x < CELL; x++) {
-        for (int y = 0; y < CELL; y++) {
-            int distance[] = { y, CELL - 1 - x, CELL - 1 - y, x };
-            for (int d = 0; d < 4; d++) {
-                unsigned rough = (x * 5 + y * 3 + d * 7) ^ (x * y);
-                int a = distance[d], b = distance[(d + 1) & 3];
-                uint8_t stone = MAT((rough & 2) ? MT_DIRT : MT_DIRT2);
-                if (a < 2 + (int)(rough & 1))
-                    col_set(&vox_models[M_ROCK_EDGE + d].col[x][y],
-                            a == 0 ? 2 + ((rough >> 2) & 1) : 1, stone);
-                if (a * a + b * b <= 9)
-                    col_set(&vox_models[M_ROCK_CORNER + d].col[x][y],
-                            a * a + b * b <= 4 ? 2 : 1, stone);
-                /* Round the inside of the bend between two straight banks. */
-                int ax = 6 - a, by = 6 - b;
-                if (ax < 0) ax = 0;
-                if (by < 0) by = 0;
-                int radius_sq = ax * ax + by * by;
-                if (radius_sq >= 20)
-                    col_set(&vox_models[M_ROCK_JOIN + d].col[x][y],
-                            radius_sq >= 30 ? 2 : 1, stone);
-            }
-        }
-    }
-
-    for (int i = 0; i < 4; i++)
-        stack(&vox_models[M_TRAP], 2 + (i & 1) * 3, 2 + (i & 1) * 3,
-              2 + (i >> 1) * 3, 2 + (i >> 1) * 3, 2, MAT(MT_STEEL));
-
-    stack(&vox_models[M_GOLD], 2, 5, 2, 5, 1, MAT(MT_GOLD));
-    stack(&vox_models[M_GOLD], 3, 4, 3, 4, 2, MAT(MT_GOLD));
-
-    stack(&vox_models[M_POTION], 2, 5, 3, 4, 2, MAT(MT_POTION));
-    stack(&vox_models[M_POTION], 3, 4, 3, 4, 1, MAT(MT_POTION));
-    stack(&vox_models[M_POTION], 3, 4, 3, 4, 1, MAT(MT_CAP));
-
-    stack(&vox_models[M_SCROLL], 2, 5, 3, 4, 1, MAT(MT_PAPER));
-    stack(&vox_models[M_SCROLL], 2, 2, 3, 4, 1, MAT(MT_PAPER));
-    stack(&vox_models[M_SCROLL], 5, 5, 3, 4, 1, MAT(MT_PAPER));
-
-    stack(&vox_models[M_FOOD], 2, 5, 2, 5, 1, MAT(MT_FOOD));
-    stack(&vox_models[M_FOOD], 3, 4, 3, 4, 1, MAT(MT_FOOD));
-    stack(&vox_models[M_FOOD], 3, 3, 3, 3, 1, MAT(MT_TUNIC));
-
-    stack(&vox_models[M_WEAPON], 2, 5, 3, 3, 1, MAT(MT_WOOD));
-    stack(&vox_models[M_WEAPON], 3, 4, 3, 3, 5, MAT(MT_STEEL));
-
-    stack(&vox_models[M_ARMOR], 2, 5, 3, 4, 3, MAT(MT_STEEL));
-    stack(&vox_models[M_ARMOR], 3, 4, 3, 4, 1, MAT(MT_STEEL));
-
-    stack(&vox_models[M_RING], 2, 5, 2, 2, 1, MAT(MT_GOLD));
-    stack(&vox_models[M_RING], 2, 5, 5, 5, 1, MAT(MT_GOLD));
-    stack(&vox_models[M_RING], 2, 2, 3, 4, 1, MAT(MT_GOLD));
-    stack(&vox_models[M_RING], 5, 5, 3, 4, 1, MAT(MT_GOLD));
-    stack(&vox_models[M_RING], 3, 4, 5, 5, 1, MAT(MT_RED));
-
-    for (int i = 0; i < 4; i++)
-        stack(&vox_models[M_STICK], 2 + i, 2 + i, 5 - i, 5 - i, 1 + i, MAT(MT_WOOD));
-    stack(&vox_models[M_STICK], 5, 5, 2, 2, 1, MAT(MT_MAGIC));
-
-    stack(&vox_models[M_AMULET], 3, 4, 3, 4, 2, MAT(MT_GOLD));
-    stack(&vox_models[M_AMULET], 3, 4, 3, 4, 1, MAT(MT_RED));
-
-    stack(&vox_models[M_MAGIC], 3, 4, 3, 4, 3, MAT(MT_MAGIC));
-
-    for (int m = 0; m < M_COUNT; m++) vox_plinth[m] = MAT(MT_BRICKB);
-    vox_plinth[M_STAIRS] = MAT(MT_SHADOW);
-}
-
-/* What a cell's plinth is made of, by the model that stands on it. */
-uint8_t vox_plinth[M_COUNT];
-
 static int is_wall(int ch) {
     return ch == '-' || ch == '|';
+}
+
+int vox_is_wall(unsigned tile) {
+    return tile >= M_WALL_S && tile <= M_WALL_NW;
+}
+
+/* The inside of a room: its floor and whatever lies on it. */
+static int is_inside(int ch) {
+    return ch != ' ' && ch != '#' && ch != '+' && !is_wall(ch);
+}
+
+/* Which wall stands at a cell: the one against the room beside it, or at
+ * a corner the one against the room it is the corner of. */
+static uint8_t wall_for(int cx, int cy, vox_under_fn under) {
+    if (is_inside(under(cx, cy + 1))) return M_WALL_S;
+    if (is_inside(under(cx, cy - 1))) return M_WALL_N;
+    if (is_inside(under(cx + 1, cy))) return M_WALL_E;
+    if (is_inside(under(cx - 1, cy))) return M_WALL_W;
+    if (is_inside(under(cx + 1, cy + 1))) return M_WALL_SE;
+    if (is_inside(under(cx - 1, cy + 1))) return M_WALL_SW;
+    if (is_inside(under(cx + 1, cy - 1))) return M_WALL_NE;
+    if (is_inside(under(cx - 1, cy - 1))) return M_WALL_NW;
+    return M_WALL_S;
 }
 
 /* Model for a terrain or item character. under() answers what the level
@@ -317,7 +200,7 @@ static uint8_t tile_for(int ch, int cx, int cy, vox_under_fn under) {
     switch (ch) {
     case '.': return ((cx + cy) & 1) ? M_FLOOR2 : M_FLOOR;
     case '|':
-    case '-': return M_WALL;
+    case '-': return wall_for(cx, cy, under);
     case '+':
         if (!is_wall(under(cx - 1, cy)) && !is_wall(under(cx + 1, cy))) return M_DOOR_V;
         return M_DOOR_H;
@@ -361,7 +244,24 @@ static void stale(int x0, int x1, int lo, int hi) {
 
 /* The terrain of a cell lands on its own eight screen columns, no higher
  * than the tallest column and no lower than its near edge. */
+static int changed_x0 = MAP_W, changed_y0 = MAP_H, changed_x1 = -1, changed_y1 = -1;
+
+static void changed_cell(int cx, int cy) {
+    if (cx < changed_x0) changed_x0 = cx;
+    if (cx > changed_x1) changed_x1 = cx;
+    if (cy < changed_y0) changed_y0 = cy;
+    if (cy > changed_y1) changed_y1 = cy;
+}
+
+int vox_changed_cells(int box[4]) {
+    if (changed_x1 < 0) return 0;
+    box[0] = changed_x0; box[1] = changed_y0; box[2] = changed_x1; box[3] = changed_y1;
+    changed_x0 = MAP_W; changed_y0 = MAP_H; changed_x1 = changed_y1 = -1;
+    return 1;
+}
+
 static void stale_cell(int cx, int cy) {
+    changed_cell(cx, cy);
     int near = cy * CELL - ROW_MIN + CELL - 1;
     stale(cx * CELL, cx * CELL + CELL - 1, near - (CELL - 1) - COL_MAXH, near);
 }
@@ -438,6 +338,18 @@ static int lift_under(int x, int y) {
 /* The patch of canvas a creature covers where it stands right now. A cell
  * that changes height stales itself, and the creature is redrawn with it,
  * so the tallest ground is allowed for here. */
+/* A hero who turns right round is seen side on for two frames on the way.
+ * A model has four ways to face and no more, so a quarter turn has
+ * nothing between its start and its end to show. */
+#define TURN_FRAMES 3
+static uint8_t hero_turning, hero_side;
+
+static void hero_turns(const ent_t *hero, unsigned face) {
+    if (((hero->face ^ face) & 3) != 2) return;
+    hero_turning = TURN_FRAMES;
+    hero_side = (uint8_t)((hero->face + 1) & 3);
+}
+
 static void stale_ent(const ent_t *e) {
     int x = e->x + e->ox + recoil_x(e);
     int r = e->y + e->oy - ROW_MIN;
@@ -462,6 +374,7 @@ static void ent_place(uint32_t id, int kind, int cx, int cy, int frames) {
             stale_ent(e);
         }
         if (dx == 0 && dy == 0) return;
+        if (id == HERO_ID) hero_turns(e, facing(tx - e->tx, ty - e->ty));
         e->face = facing(tx - e->tx, ty - e->ty);
         e->tx = (int16_t)tx;
         e->ty = (int16_t)ty;
@@ -807,6 +720,12 @@ static void hero_follow(void) {
 void vox_animate(void) {
     vox_moving = hero_appearance_changed;
     hero_appearance_changed = 0;
+    /* The frame the turn ends on is drawn too: it is the first to show
+     * the way he now faces. */
+    if (hero_turning) {
+        hero_turning--;
+        vox_moving = 1;
+    }
     if (low_hp && ++low_hp_phase == 2 * LOW_HP_HALF) low_hp_phase = 0;
     ent_t *recoiling = 0;
     for (int i = 0; i < n_ents; i++) {
@@ -910,7 +829,7 @@ int vox_creature(int i, vox_creature_t *c) {
     c->y = e->y + e->oy;
     c->z = e->z;
     c->kind = e->kind;
-    c->face = e->face;
+    c->face = e->id == HERO_ID && hero_turning ? hero_side : e->face;
     c->attack = e->id == HERO_ID ? e->lunge : 0;
     if (defeat_staged && e->id == HERO_ID)
         c->face = facing(defeated.x - e->x, defeated.y - e->y);
@@ -925,6 +844,7 @@ void vox_hero_turn(int dx, int dy) {
         uint8_t face = facing(dx, dy);
         if (hero->face != face) {
             stale_ent(hero);
+            hero_turns(hero, face);
             hero->face = face;
             vox_hero_face = face;
             hero_appearance_changed = 1;
@@ -950,43 +870,66 @@ static unsigned passage_at(int x, int y) {
            vox_tile[y][x] == M_PASSAGE;
 }
 
+/* What lines a discovered passage at an empty cell, and how it is lit:
+ * M_VOID for nothing. Blank screen cells can conceal a real floor or door,
+ * so the underlying cell is checked before scenery is placed there. The
+ * answer depends on the passages and their light no more than two cells
+ * away. */
+static unsigned fringe_for(int x, int y, vox_under_fn under, unsigned *lit) {
+    unsigned rock = M_VOID, light = vox_light[y][x];
+    unsigned edges = 0;
+    for (int d = 0; d < 4; d++) {
+        int nx = x + edge_x[d], ny = y + edge_y[d];
+        if (!passage_at(nx, ny)) continue;
+        if (!edges || vox_light[ny][nx] > light) light = vox_light[ny][nx];
+        if (!edges) rock = M_ROCK_EDGE + d;
+        edges |= 1u << d;
+    }
+    for (int d = 0; edges && d < 4; d++) {
+        unsigned pair = (1u << d) | (1u << ((d + 1) & 3));
+        if ((edges & pair) != pair) continue;
+        rock = M_ROCK_JOIN + d;
+        break;
+    }
+    if (rock == M_VOID) {
+        for (int d = 0; d < 4; d++) {
+            int next = (d + 1) & 3;
+            int nx = x + edge_x[d] + edge_x[next];
+            int ny = y + edge_y[d] + edge_y[next];
+            if (!passage_at(nx, ny) ||
+                !passage_at(nx + edge_x[d], ny + edge_y[d]) ||
+                !passage_at(nx + edge_x[next], ny + edge_y[next])) continue;
+            rock = M_ROCK_CORNER + d;
+            light = vox_light[ny][nx];
+            break;
+        }
+    }
+    if (rock != M_VOID && under(x, y) != ' ') rock = M_VOID;
+#ifndef FRINGE_ALL
+    /* Rock is slow for a ray to cross, a voxel at a time, and a level can
+     * be half passages. So it lines a passage only where the hero's light
+     * falls, within two cells of him: the rest of a passage he has been
+     * down is the bare path. */
+    if (light < LIGHT_NEAR) rock = M_VOID;
+#endif
+    *lit = light;
+    return rock;
+}
+
 /* Line discovered passages on the rendering map after the real tiles have
- * settled. Blank screen cells can conceal a real floor or door, so check
- * the underlying cell before placing scenery there. */
-static void fringe_passages(vox_under_fn under, int assembling, int tread_count) {
-    for (int y = 1; y < MAP_H - 1; y++) {
-        for (int x = 0; x < MAP_W; x++) {
+ * settled, in the cells x0..x1, y0..y1. */
+static void fringe_passages(vox_under_fn under, int assembling, int tread_count,
+                            int x0, int y0, int x1, int y1) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 1) y0 = 1;
+    if (x1 > MAP_W - 1) x1 = MAP_W - 1;
+    if (y1 > MAP_H - 2) y1 = MAP_H - 2;
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
             unsigned old = vox_tile[y][x];
             if (old != M_VOID && old < M_ROCK_EDGE) continue;
-            unsigned rock = M_VOID, light = vox_light[y][x];
-            unsigned edges = 0;
-            for (int d = 0; d < 4; d++) {
-                int nx = x + edge_x[d], ny = y + edge_y[d];
-                if (!passage_at(nx, ny)) continue;
-                if (!edges || vox_light[ny][nx] > light) light = vox_light[ny][nx];
-                if (!edges) rock = M_ROCK_EDGE + d;
-                edges |= 1u << d;
-            }
-            for (int d = 0; edges && d < 4; d++) {
-                unsigned pair = (1u << d) | (1u << ((d + 1) & 3));
-                if ((edges & pair) != pair) continue;
-                rock = M_ROCK_JOIN + d;
-                break;
-            }
-            if (rock == M_VOID) {
-                for (int d = 0; d < 4; d++) {
-                    int next = (d + 1) & 3;
-                    int nx = x + edge_x[d] + edge_x[next];
-                    int ny = y + edge_y[d] + edge_y[next];
-                    if (!passage_at(nx, ny) ||
-                        !passage_at(nx + edge_x[d], ny + edge_y[d]) ||
-                        !passage_at(nx + edge_x[next], ny + edge_y[next])) continue;
-                    rock = M_ROCK_CORNER + d;
-                    light = vox_light[ny][nx];
-                    break;
-                }
-            }
-            if (rock != M_VOID && under(x, y) != ' ') rock = M_VOID;
+            unsigned light;
+            unsigned rock = fringe_for(x, y, under, &light);
             if (rock == old && (rock == M_VOID || light == vox_light[y][x])) continue;
             vox_tile[y][x] = (uint8_t)rock;
             vox_light[y][x] = (uint8_t)light;
@@ -1002,6 +945,130 @@ static void fringe_passages(vox_under_fn under, int assembling, int tread_count)
     }
 }
 
+/* What a cell of Rogue's screen makes of a cell of the world: its model,
+ * light and plinth, and the creature standing there or -1. Zero for a cell
+ * that is left as it is. */
+static int cell_for(const uint8_t *cells, const vox_source_t *src, const int *room,
+                    int same_level, int cx, int cy,
+                    uint8_t *tile_out, uint8_t *light_out, int *lift_out, int *ent_out) {
+    int ch = cells[cy * MAP_W + cx] & 0x7F;
+    int ent = ent_for(ch);
+    uint8_t tile = tile_for(ent < 0 ? ch : src->under(cx, cy), cx, cy, src->under);
+    if (tile == M_VOID && same_level && vox_tile[cy][cx] >= M_ROCK_EDGE)
+        return 0;   /* refreshed after all discovered tiles are loaded */
+
+    uint8_t light = LIGHT_DIM;
+    if (room && cx >= room[0] && cx <= room[2] && cy >= room[1] && cy <= room[3]) {
+        light = LIGHT_BRIGHT;
+    } else {
+        int dx = abs(cx - vox_hero_cx), dy = abs(cy - vox_hero_cy);
+        int d = dx > dy ? dx : dy;
+        if (d <= 1) light = LIGHT_BRIGHT;
+        else if (d == 2) light = LIGHT_NEAR;
+    }
+
+    /* Rogue forgets the floor of a dark room as soon as the hero
+     * steps away. The hero does not: what was there stays, dimmer. */
+    if (tile == M_VOID && same_level && vox_tile[cy][cx] != M_VOID) {
+        tile = vox_tile[cy][cx];
+        if (light < LIGHT_NEAR) light = LIGHT_MEMORY;
+    }
+
+    int lift = 0;
+    if (tile != M_VOID) {
+        unsigned old = vox_tile[cy][cx];
+        /* Room height is fixed for the level. Query it when this
+         * tile first appears or changes to or from a stair. */
+        if (same_level && old != M_VOID && old < M_ROCK_EDGE &&
+            (old == M_STAIRS) == (tile == M_STAIRS)) {
+            lift = vox_lift[cy][cx];
+        } else {
+            lift = src->ground(cx, cy);
+            if (lift > LIFT_MAX) lift = LIFT_MAX;
+            if (tile == M_STAIRS) lift = lift > STAIR_DROP ? lift - STAIR_DROP : 0;
+        }
+    }
+    *tile_out = tile;
+    *light_out = light;
+    *lift_out = lift;
+    *ent_out = ent;
+    return 1;
+}
+
+/* What vox_load_screen last made the world from. A cell is only worked out
+ * again when something its answer depends on has changed: its character on
+ * Rogue's screen, the hero within two cells of it before or now, or the lit
+ * room it is in. A creature's cell is always worked out, to keep track of
+ * the creature. */
+static uint8_t last_screen[MAP_H * MAP_W];
+static int last_room[4], had_room, screen_known, level_passages;
+
+#ifdef FOLD_CHECK
+/* Cells a whole pass would have changed after the short one: there should
+ * be none. Terrain, passage fringe, and the perspective renderer's copy. */
+uint16_t fold_missed[3];
+#endif
+
+static int near_cell(int cx, int cy, int x, int y) {
+    return abs(cx - x) <= 2 && abs(cy - y) <= 2;
+}
+
+static int in_room(const int *room, int cx, int cy) {
+    return cx >= room[0] && cx <= room[2] && cy >= room[1] && cy <= room[3];
+}
+
+/* The passage the hero is in, as far as it has been found: every passage
+ * cell that can be walked to from his along passage, and the doors it
+ * comes to. It is worked out when asked for after a screen has been
+ * loaded, not every frame. */
+static uint8_t hall[4], hall_found, hall_stale = 1;
+
+static void find_hall(void) {
+    enum { MOST = 256 };
+    uint16_t todo[MOST];
+    uint8_t seen[MAP_H][(MAP_W + 7) / 8];
+    int n = 0, x0 = vox_hero_cx, y0 = vox_hero_cy, x1 = x0, y1 = y0;
+    static const int8_t step[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+    hall_stale = 0;
+    hall_found = 0;
+    if ((unsigned)x0 >= MAP_W || (unsigned)y0 >= MAP_H) return;
+    unsigned under = vox_tile[y0][x0];
+    if (under != M_PASSAGE && under != M_DOOR_H && under != M_DOOR_V) return;
+    memset(seen, 0, sizeof seen);
+    seen[y0][x0 >> 3] |= (uint8_t)(1 << (x0 & 7));
+    todo[n++] = (uint16_t)(y0 * MAP_W + x0);
+    while (n) {
+        int at = todo[--n], cx = at % MAP_W, cy = at / MAP_W;
+        /* A door is the end of a passage, unless the hero is in it. */
+        int door = vox_tile[cy][cx] != M_PASSAGE;
+        if (cx < x0) x0 = cx;
+        if (cx > x1) x1 = cx;
+        if (cy < y0) y0 = cy;
+        if (cy > y1) y1 = cy;
+        if (door && (cx != vox_hero_cx || cy != vox_hero_cy)) continue;
+        for (int k = 0; k < 4; k++) {
+            int x = cx + step[k][0], y = cy + step[k][1];
+            if ((unsigned)x >= MAP_W || y < 1 || y >= MAP_H - 1) continue;
+            unsigned tile = vox_tile[y][x];
+            if (tile != M_PASSAGE && (door || (tile != M_DOOR_H && tile != M_DOOR_V))) continue;
+            if (seen[y][x >> 3] & (1 << (x & 7))) continue;
+            seen[y][x >> 3] |= (uint8_t)(1 << (x & 7));
+            if (n < MOST) todo[n++] = (uint16_t)(y * MAP_W + x);
+        }
+    }
+    /* A hero in a doorway with no passage found beyond it is in a room. */
+    if (under != M_PASSAGE && x0 == x1 && y0 == y1) return;
+    hall[0] = (uint8_t)x0; hall[1] = (uint8_t)y0; hall[2] = (uint8_t)x1; hall[3] = (uint8_t)y1;
+    hall_found = 1;
+}
+
+int vox_passage(int *bounds) {
+    if (hall_stale) find_hall();
+    if (!hall_found) return 0;
+    for (int i = 0; i < 4; i++) bounds[i] = hall[i];
+    return 1;
+}
+
 /* Row 0 of Rogue's screen is its message line and the last row its status
  * line; neither is dungeon. */
 int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
@@ -1009,7 +1076,6 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
     vox_under_fn under = src->under;
     int same_level = (depth == last_depth);
     int terrain_changed = !same_level;
-    int has_passages = 0;
     int old_x = vox_hero_cx, old_y = vox_hero_cy;
 
     last_depth = depth;
@@ -1039,46 +1105,38 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
         assembly_dy = dy;
     }
 
+    int all = !same_level || !screen_known;
+    int room_changed = had_room != (room != 0) ||
+                       (room && (room[0] != last_room[0] || room[1] != last_room[1] ||
+                                 room[2] != last_room[2] || room[3] != last_room[3]));
+    /* The cells whose model, light or plinth this call changes. */
+    int x0 = MAP_W, y0 = MAP_H, x1 = -1, y1 = -1;
+    if (!same_level) {
+        level_passages = 0;
+        x0 = y0 = 0;
+        x1 = MAP_W - 1;
+        y1 = MAP_H - 1;
+        changed_cell(0, 0);
+        changed_cell(MAP_W - 1, MAP_H - 1);
+    }
+
     for (int cy = 1; cy < MAP_H - 1; cy++) {
+        /* Rows where light can have changed are looked at cell by cell. */
+        int lit_row = all || abs(cy - old_y) <= 2 || abs(cy - vox_hero_cy) <= 2 ||
+                      (room_changed && ((had_room && cy >= last_room[1] && cy <= last_room[3]) ||
+                                        (room && cy >= room[1] && cy <= room[3])));
         for (int cx = 0; cx < MAP_W; cx++) {
-            int ch = cells[cy * MAP_W + cx] & 0x7F;
-            int ent = ent_for(ch);
-            uint8_t tile = tile_for(ent < 0 ? ch : under(cx, cy), cx, cy, under);
-            if (tile == M_VOID && same_level && vox_tile[cy][cx] >= M_ROCK_EDGE)
-                continue;   /* refreshed after all discovered tiles are loaded */
-
-            uint8_t light = LIGHT_DIM;
-            if (room && cx >= room[0] && cx <= room[2] && cy >= room[1] && cy <= room[3]) {
-                light = LIGHT_BRIGHT;
-            } else {
-                int dx = abs(cx - vox_hero_cx), dy = abs(cy - vox_hero_cy);
-                int d = dx > dy ? dx : dy;
-                if (d <= 1) light = LIGHT_BRIGHT;
-                else if (d == 2) light = LIGHT_NEAR;
+            int at = cy * MAP_W + cx;
+            if (!all && cells[at] == last_screen[at] && ent_for(cells[at] & 0x7F) < 0) {
+                if (!lit_row) continue;
+                if (!near_cell(cx, cy, old_x, old_y) && !near_cell(cx, cy, vox_hero_cx, vox_hero_cy) &&
+                    !(room_changed && ((had_room && in_room(last_room, cx, cy)) ||
+                                       (room && in_room(room, cx, cy))))) continue;
             }
-
-            /* Rogue forgets the floor of a dark room as soon as the hero
-             * steps away. The hero does not: what was there stays, dimmer. */
-            if (tile == M_VOID && same_level && vox_tile[cy][cx] != M_VOID) {
-                tile = vox_tile[cy][cx];
-                if (light < LIGHT_NEAR) light = LIGHT_MEMORY;
-            }
-            has_passages |= tile == M_PASSAGE;
-
-            int lift = 0;
-            if (tile != M_VOID) {
-                unsigned old = vox_tile[cy][cx];
-                /* Room height is fixed for the level. Query it when this
-                 * tile first appears or changes to or from a stair. */
-                if (same_level && old != M_VOID && old < M_ROCK_EDGE &&
-                    (old == M_STAIRS) == (tile == M_STAIRS)) {
-                    lift = vox_lift[cy][cx];
-                } else {
-                    lift = src->ground(cx, cy);
-                    if (lift > LIFT_MAX) lift = LIFT_MAX;
-                    if (tile == M_STAIRS) lift = lift > STAIR_DROP ? lift - STAIR_DROP : 0;
-                }
-            }
+            uint8_t tile, light;
+            int lift, ent;
+            if (!cell_for(cells, src, room, same_level, cx, cy, &tile, &light, &lift, &ent)) continue;
+            level_passages |= tile == M_PASSAGE;
 
             if (tile != vox_tile[cy][cx] || light != vox_light[cy][cx] ||
                 lift != vox_lift[cy][cx]) {
@@ -1092,6 +1150,10 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                 vox_lift[cy][cx] = (uint8_t)lift;
                 stale_cell(cx, cy);
                 terrain_changed = 1;
+                if (cx < x0) x0 = cx;
+                if (cx > x1) x1 = cx;
+                if (cy < y0) y0 = cy;
+                if (cy > y1) y1 = cy;
             }
 
             if (ent >= 0) {
@@ -1102,8 +1164,38 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
             }
         }
     }
+    memcpy(last_screen, cells, sizeof last_screen);
+    had_room = room != 0;
+    if (room) for (int i = 0; i < 4; i++) last_room[i] = room[i];
+    screen_known = 1;
+#ifdef FOLD_CHECK
+    for (int cy = 1; cy < MAP_H - 1; cy++) {
+        for (int cx = 0; cx < MAP_W; cx++) {
+            uint8_t tile, light;
+            int lift, ent;
+            if (cell_for(cells, src, room, same_level, cx, cy, &tile, &light, &lift, &ent) &&
+                (tile != vox_tile[cy][cx] || light != vox_light[cy][cx] || lift != vox_lift[cy][cx]) &&
+                fold_missed[0] != 0xFFFF) fold_missed[0]++;
+        }
+    }
+#endif
 
-    if (terrain_changed && has_passages) fringe_passages(under, assembling, assembly_count);
+    hall_stale = 1;
+    /* A fringe cell answers to what is within two cells of it. */
+    if (terrain_changed && level_passages) {
+        fringe_passages(under, assembling, assembly_count, x0 - 2, y0 - 2, x1 + 2, y1 + 2);
+#ifdef FOLD_CHECK
+        for (int y = 1; y < MAP_H - 1; y++) {
+            for (int x = 0; x < MAP_W; x++) {
+                unsigned old = vox_tile[y][x], light;
+                if (old != M_VOID && old < M_ROCK_EDGE) continue;
+                unsigned rock = fringe_for(x, y, under, &light);
+                if (!(rock == old && (rock == M_VOID || light == vox_light[y][x])) &&
+                    fold_missed[1] != 0xFFFF) fold_missed[1]++;
+            }
+        }
+#endif
+    }
 
     /* Whatever Rogue no longer shows is gone, in pieces if it died. What
      * is still here and has fewer hit points than before was hurt, and
@@ -1175,7 +1267,6 @@ void vox_palette(int light) {
     }
 }
 
-static uint8_t model_height[M_COUNT];      /* tallest column of each model */
 
 int vox_stair_at(int cx, int cy) {
     return (unsigned)cx < MAP_W && (unsigned)cy < MAP_H && vox_tile[cy][cx] == M_STAIRS;
@@ -1195,16 +1286,6 @@ void vox_init(void) {
     for (int i = 0; i < 256; i++) vox_wtab[i] = (uint16_t)(i * 0x0101);
     memset(slot_owner, 0xFF, sizeof(slot_owner));
     memset(dirty_lo, 0xFF, sizeof(dirty_lo));
-    build_models();
-    for (int m = 0; m < M_COUNT; m++) {
-        for (int lx = 0; lx < CELL; lx++) {
-            for (int ly = 0; ly < CELL; ly++) {
-                if (vox_models[m].col[lx][ly].h > model_height[m]) {
-                    model_height[m] = vox_models[m].col[lx][ly].h;
-                }
-            }
-        }
-    }
 }
 
 /* Write one fat pixel at tape position a and step a up one canvas row. */

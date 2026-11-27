@@ -35,6 +35,9 @@ typedef struct {
 } vmodel_t;
 
 extern int vox_hero_cx, vox_hero_cy;   /* where the last screen load found '@' */
+/* The passage the hero is in as far as it has been found, doors and all,
+ * as x0 y0 x1 y1. Zero when he is not in one. */
+int vox_passage(int *bounds);
 extern int vox_hero_armor, vox_hero_weapon;   /* Rogue's numbers for what he wears and wields, -1 for nothing */
 extern int vox_hero_x, vox_hero_y;     /* top left voxel of the hero right now */
 extern int vox_hero_busy;              /* the hero is still walking or lunging */

@@ -33,6 +33,10 @@ int  rogue_bot_answer(void);               /* test builds: the answer to a promp
 #endif
 void rogue_gear(int *armor, int *weapon);  /* Rogue's numbers for what is worn and wielded, -1 for nothing */
 void rogue_idle(int on);                   /* turns that pass by themselves cost no food */
+#ifdef SNAP
+int  rogue_snap_station(int n);          /* stand the hero at a station of the baked level */
+const char *rogue_snap_name(int n);      /* what that station is called, 0 past the last */
+#endif
 int  rogue_room(int *bounds);              /* lit room the player is in, as x0 y0 x1 y1 */
 int  rogue_cursor_row(void);               /* 0 while Rogue waits on a prompt */
 typedef struct {

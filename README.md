@@ -22,6 +22,11 @@ make            # rom/voxelike.32x: the game
 make FLAT=1     # the flat view alone, without the 3D renderer
 make STATS=1    # show frames a second and the time to draw one
 make BENCH=7    # the same 256 frames every run, for timing (tools/mbench.sh)
+make FULL_VIEW=1       # rays cross the whole map, not only the hero's room
+make RENDER_TEST=7     # a bot plays dungeon 7 and times rooms, passages and fights
+make FOLD_CHECK=1      # count cells the short screen fold-in missed (there should be none)
+make POLY=1            # the hero's lit room is drawn as flat polygons, not by rays
+make POLYBENCH=1       # rom/polybench.32x: a room of flat polygons, timed (2: on one SH-2; 3: both draw; EYE=128..208; ACTORS=0..8)
 make VERSION=0.1.0-alpha.1   # the name on the title screen; without it, dev- and the commit
 make ARMOR=7 WEAPON=5   # dress the hero for looking at the art (Rogue's numbers)
 make RES=0      # start in 160x112. RES=1 is 320x112 (default), RES=2 is 320x224
@@ -164,6 +169,98 @@ index 1, not 0: the 32X drops a zero written to the framebuffer as a byte.
 The game starts at 320×112. It works out all 320 columns and repeats each
 row on two scanlines. Use `make RES=0` for 160×112 or `make RES=2` for native
 320×224.
+
+During play the rays only look at the room the hero is in and two cells
+round it. In a passage or a dark room, that is two cells round the hero.
+Everything outside is black. Dim surfaces more than five cells behind the
+hero are drawn in one colour, not their texture. The title, the death
+scene and the other cinematics still draw the whole map. `make FULL_VIEW=1`
+builds the game without the room limit.
+
+What lies outside the room is on a map in the top right corner, two pixels
+to a cell, made from Rogue's own screen, which keeps what the hero has seen.
+Walls, doors and passages are solid, floor is every other pixel so the
+picture shows through, the stairs are green and the hero is a light dot. It
+is drawn by the Mega Drive in tiles 256 to 375, a few tiles a frame as they
+change, and gives way to a message.
+
+`make RENDER_TEST=7 RES=1` measures it. A bot plays dungeon 7, and up to 32
+frames each in rooms, passages and fights are drawn twice with the same
+camera: once without the creatures, then with them. The yellow lines give
+the mean of each in timer ticks, and the mean time to fold in Rogue's
+screen after a step in a passage. In ares, which is quicker than the
+hardware, at 320×112 (6,000 ticks is two vblanks):
+
+| Mean ticks to draw | Rooms | Passages | Fights |
+|--------------------|-------|----------|--------|
+| Whole map (`FULL_VIEW=1`) | 7369 | 7987 | 9247 |
+| Room limit (default)      | 6149 | 3382 | 6567 |
+
+When Rogue's screen changes, only the cells whose answer can have changed
+are worked out again: those whose character changed, those within two cells
+of the hero before or after, and those of a lit room entered or left. The
+rock beside passages is redone within two cells of a change, and the 3D
+renderer copies only the box of changed cells. In ares this step went from
+about 7,260 ticks to 2,600 in a passage. `make RENDER_TEST=7 FOLD_CHECK=1`
+runs the whole-map pass after the short one and counts what it would still
+change in `fold_missed`: zero over five levels.
+
+`make POLY=1` draws the lit room the hero is in as flat polygons
+(`sh_src/poly.c`); passages, dark rooms and the scripted scenes are still
+drawn by the rays. A cell that is one height all over is a box, its top
+and the sides that stand above their neighbours each one colour, with
+floors in two shades cell and cell about (a floor is a slab one voxel
+high, however far its plinth has lifted it; a wall is two). A door, stairs, a thing on the
+floor and every creature is drawn as its voxel columns, each a small box
+of whole words. Nothing is sorted: ground is painted first, then what
+stands on it cell by cell, farthest from the eye first along each axis.
+The secondary SH-2 clears the picture with the fill hardware while the
+primary projects the corners of the cells; then each draws half the
+screen. With `RENDER_TEST=7 RES=1` in ares a room takes about 2,050 ticks
+where the rays take about 6,100, and a fight 2,070 where they take 6,550.
+It draws 320 by 112 whatever resolution is chosen, and blood stains are
+not drawn yet.
+
+A textured software polygon renderer and a cached ground plane were also
+tried and were no faster. They are not in this tree.
+
+`make POLYBENCH=1` asks a narrower question: how fast is a room of
+flat-coloured polygons? It builds `rom/polybench.32x`, which draws one room
+of Rogue's largest size (22 by 9 cells, about 230 quads a frame) through
+the game's camera at 320 by 112, with no textures. Quads are
+sorted far to near in buckets and every span longer than two words is
+painted by the 32X's fill hardware, on rows 512 bytes apart so that no fill
+crosses a 256-word page. In ares it takes about 2,000 ticks a frame (2,200
+at worst) against about 6,100 for the rays in a room. The secondary SH-2
+does all the drawing and the primary waits for it most of the frame, so
+the two are not yet sharing the work. Results are in `polybench_result`.
+
+Creatures in it are not polygons. Each is drawn as its 64 voxel columns,
+far corner to near, every column a box of whole words with its top in one
+colour and its side coloured by height, placed by steps from one projected
+point. `ACTORS=n` stands n of them in the room (5 unless given). One costs
+about 170 ticks: the room takes about 2,000 ticks empty, 2,190 with the
+hero alone and 2,820 with five.
+
+`make POLYBENCH=3` shares the drawing: the primary draws the left half of
+the screen and the secondary the right, each in the same far-to-near order.
+The framebuffer takes no write while a fill is running, so neither can use
+the fill hardware for spans when both draw; spans are written by the CPU
+and only the clear is a fill. Five creatures then take about 2,180 ticks
+(2,370 at worst). Writing spans by CPU with one SH-2 drawing (`SOFT=1`)
+takes 3,380, so the fill hardware is worth about a sixth and the second
+CPU more than that.
+
+A wall cell's side is drawn only where the cell beside it is not wall.
+Cells along a wall are about as far from the eye as each other, so depth
+buckets cannot be relied on to paint a neighbour over a side that faces it;
+drawn, those sides showed as dark slivers along the wall.
+
+Every 48 frames one creature in it goes to pieces, as in a fight: forty of
+its voxels fly out and fall while it is not drawn. The pieces are projected
+one by one and written over the finished picture by the primary. The frame
+costs the same with them as without (`SHATTER=0`): forty pieces take about
+as long as the creature they came from.
 
 Floor tiles and wall caps use 8×8 material maps in `models/terrain.txt`.
 The maps adapt Kenney textures to the dungeon palette and run through

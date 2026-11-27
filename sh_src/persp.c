@@ -9,6 +9,8 @@ typedef int persp_unit;
 #include "persp.h"
 #include "sh2zam/sh2zam.h"
 #include "baked3d.h"
+#include "../port/plat.h"
+#include "persp_poly.h"
 
 /* A voxel-space renderer. The world is solid columns on a grid, so each
  * screen column is one ray across the ground: step from grid line to grid
@@ -41,30 +43,29 @@ static const uint16_t focal_step[17] = { 128, 156, 190, 232, 283, 346, 421, 514,
 #define INV_N     1024
 
 #define FB_PIXELS 0x100                    /* after the line table */
-#define MAX_BUMPS 32
+/* Creatures the rays can draw at once: each has a model of its own, a
+ * kilobyte. With POLY the rays draw only the hero's arrival and the
+ * bestiary, where there are never many, and the polygons have the room
+ * for their own tables. */
+#ifdef POLY
+#define MAX_BUMPS 16
+#else
+#define MAX_BUMPS 31
+#endif
 
 #define NEVER     (INT32_MAX / 2)
-#define DETAIL    0xFF
 
 static uint32_t inv_t[INV_N];              /* focal length / depth, Q16 */
 static uint32_t rise_t[INV_N];             /* depth / focal length, Q16: voxels per row */
 /* Depth, in Q30, at which a level surface one voxel below the eye shows on
  * each row. One h voxels below shows at h times that. It is never as much
  * as 2: the eye is at least as high as the focal length is long. */
-static uint32_t row_t[2 * VIEW_H];
+uint32_t persp_rows[2 * VIEW_H];
+#define row_t persp_rows
 
-/* One frame's camera, shared by both CPUs. The primary fills it in and
- * raises COMM6; the secondary draws the odd columns, the primary the even
- * ones, and the secondary lowers COMM6 when its share is done. */
-static struct {
-    uint16_t *fb;
-    int32_t ex, ey;
-    sh2z_fx_t s, c;
-    int32_t focal, horizon;
-    int32_t eye_h, t_near, t_far;
-    int res;               /* PERSP_RES_x: how finely the picture is drawn */
-    int cols, rows;
-} job;
+/* One frame's camera, shared by both CPUs: persp_job_t. */
+persp_job_t persp_job;
+#define job persp_job
 
 /* The framebuffer is 320 bytes a row whatever the resolution. A coarse
  * column is two pixels wide, written as one word; a coarse row is shown on
@@ -85,24 +86,9 @@ typedef uint32_t __attribute__((may_alias)) quad_t;
 static uint8_t tops[VOX_MODELS_MAX][CELL * CELL];
 static uint8_t stained_tops[VOX_MODELS_MAX][CELL * CELL];
 
-/* All a ray needs to know about a cell, in one cache line. */
-typedef struct {
-    const vmodel_t *m;
-    const uint8_t *top;
-    uint8_t flat;          /* its one height, plinth and all, or DETAIL */
-    uint8_t light;         /* top-face shade. For an empty cell, how many
-                            * cells a ray can cross from here, whichever way
-                            * it goes, before it needs to look again */
-    uint8_t lift;
-    uint8_t plinth;
-    uint8_t stain;
-    uint8_t creature_index;  /* 1-based index into creature_layers, or 0 */
-    uint8_t ground;       /* terrain's own height, before a creature is placed */
-    uint8_t pad;
-} pcell_t;
-
-typedef char pcell_is_a_line[sizeof(pcell_t) == 16 ? 1 : -1];
-static pcell_t cells[MAP_H][MAP_W];
+/* All a ray needs to know about a cell is a pcell_t, one cache line. */
+pcell_t persp_cells[MAP_H][MAP_W];
+#define cells persp_cells
 
 /* A cell with a creature in it gets a model of its own: the terrain's, with
  * the creature's voxel columns standing on it. */
@@ -127,6 +113,9 @@ void persp_init(void) {
                                ? vox_blood_material : tops[m][i];
         }
     }
+#ifdef POLY
+    poly_init();
+#endif
 
 }
 
@@ -153,6 +142,7 @@ static void terrain(int cx, int cy) {
     pc->creature_index = 0;
     pc->stain = (uint8_t)vox_stained(cx, cy);
     pc->top = pc->stain ? stained_tops[tile] : tops[tile];
+    pc->distant_top = pc->stain ? 0 : tops[tile][3 * CELL + 3];
     pc->flat = (uint8_t)(partial || h == DETAIL ? DETAIL : h + vox_lift[cy][cx]);
     pc->ground = pc->flat;
     pc->lift = vox_lift[cy][cx];
@@ -166,12 +156,35 @@ static unsigned run_at(int cx, int cy) {
 
 /* Refresh the empty runs only when a cell changes between empty and
  * occupied. Light, height, items and creatures leave those runs valid. */
+#ifdef FOLD_CHECK
+extern uint16_t fold_missed[3];
+#endif
+
 void persp_sync(int terrain_changed) {
     int rebuild_runs = !runs_ready;
-    if (terrain_changed || rebuild_runs) {
+    int box[4] = { 0, 0, MAP_W - 1, MAP_H - 1 };
+    if (rebuild_runs) {
+        /* Nothing here can be trusted: every cell is looked at. */
         n_bumped = 0;
-        for (int cy = 0; cy < MAP_H; cy++) {
-            for (int cx = 0; cx < MAP_W; cx++) {
+        vox_changed_cells(box);
+        box[0] = box[1] = 0;
+        box[2] = MAP_W - 1;
+        box[3] = MAP_H - 1;
+    } else if (terrain_changed) {
+        /* The cells creatures stand on go back to their terrain first, as
+         * a look at every cell would have put them. */
+        while (n_bumped > 0) {
+            n_bumped--;
+            pcell_t *pc = &cells[bumped[n_bumped].cy][bumped[n_bumped].cx];
+            int was_empty = pc->flat == 0;
+            terrain(bumped[n_bumped].cx, bumped[n_bumped].cy);
+            if (was_empty != (pc->flat == 0)) rebuild_runs = 1;
+        }
+        if (!vox_changed_cells(box)) box[2] = box[3] = -1;
+    }
+    if (terrain_changed || rebuild_runs) {
+        for (int cy = box[1]; cy <= box[3]; cy++) {
+            for (int cx = box[0]; cx <= box[2]; cx++) {
                 pcell_t *pc = &cells[cy][cx];
                 unsigned tile = vox_tile[cy][cx];
                 unsigned lift = vox_lift[cy][cx];
@@ -183,6 +196,18 @@ void persp_sync(int terrain_changed) {
                 if (was_empty != (pc->flat == 0)) rebuild_runs = 1;
             }
         }
+#ifdef FOLD_CHECK
+        for (int cy = 0; cy < MAP_H; cy++) {
+            for (int cx = 0; cx < MAP_W; cx++) {
+                pcell_t *pc = &cells[cy][cx];
+                if (vox_assembly_model(cx, cy)) continue;
+                if (!(pc->m == &vox_models[vox_tile[cy][cx]] && pc->lift == vox_lift[cy][cx] &&
+                      pc->stain == vox_stained(cx, cy) &&
+                      (!pc->flat || pc->light == vox_light[cy][cx])) &&
+                    fold_missed[2] != 0xFFFF) fold_missed[2]++;
+            }
+        }
+#endif
     }
     if (!rebuild_runs) {
         persp_creatures(0);
@@ -297,6 +322,10 @@ static const vcol_t (*hero_dressed(unsigned attack))[CELL] {
     return (const vcol_t (*)[CELL])made;
 }
 
+const vcol_t (*persp_creature_model(const vox_creature_t *c))[CELL] {
+    return c->kind ? ent_solid[c->kind] : hero_dressed(c->attack);
+}
+
 void persp_hero_shatter(void) {
     vox_hero_shatter(hero_dressed(0));
 }
@@ -332,6 +361,13 @@ static int overlaps_stairs(int x, int y) {
 /* Stand every creature where it is this frame. A creature is 8x8 columns
  * of voxels, turned to face the way it last moved; walking between cells
  * it stands partly on each. */
+#ifdef RENDER_TEST
+static int test_hide_actors;   /* a timing build draws each frame once without them */
+int persp_actors_hidden(void) { return test_hide_actors; }
+#else
+int persp_actors_hidden(void) { return 0; }
+#endif
+
 static void place_creatures(int hero_buried, int stair, int offset, int hop) {
     vox_creature_t c;
 
@@ -341,6 +377,9 @@ static void place_creatures(int hero_buried, int stair, int offset, int hop) {
     }
     for (int i = 0, cx, cy; vox_assembly_cell(i, &cx, &cy); i++)
         terrain(cx, cy);
+#ifdef RENDER_TEST
+    if (test_hide_actors) return;
+#endif
     for (int i = 0; vox_creature(i, &c); i++) {
         if (stair && !c.kind) {
             c.x += offset;
@@ -389,6 +428,13 @@ static void place_creatures(int hero_buried, int stair, int offset, int hop) {
 void persp_creatures(int hero_buried) {
     place_creatures(hero_buried, 0, 0, 0);
 }
+
+#ifdef RENDER_TEST
+void persp_test_actors(int visible) {
+    test_hide_actors = !visible;
+    persp_creatures(0);
+}
+#endif
 
 void persp_stair_hop(int sink, int offset, int hop) {
     place_creatures(sink, 1, offset, hop);
@@ -654,6 +700,9 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
     int32_t dx20 = dx << 4, dy20 = dy << 4;
     int64_t ex48 = (int64_t)ex << 16, ey48 = (int64_t)ey << 16;
 
+    const int map_left = job.view_left, map_right = job.view_right;
+    const int map_top = job.view_top, map_bottom = job.view_bottom;
+
     int32_t t_in = T_NEAR;
     int ybuf = start_row;   /* rows from here down are drawn */
     int prev_h = 0, x_side = 0;
@@ -668,7 +717,8 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
         const vmodel_t *m = 0;
         const uint8_t *tex = 0;
         int creature_on_flat = 0;
-        if ((unsigned)cx < MAP_W && (unsigned)cy < MAP_H) {
+        unsigned distant_top = 0;
+        if (cx >= map_left && cx < map_right && cy >= map_top && cy < map_bottom) {
             const pcell_t *pc = &cells[cy][cx];
             kind = pc->flat;
             if (kind == 0) {
@@ -686,12 +736,13 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
                 m = pc->m;
                 tex = pc->top;
                 st = pc->light;
+                if (st <= 3 && t_in >= job.texture_depth) distant_top = pc->distant_top;
                 lift = pc->lift;
                 plinth = pc->plinth;
             }
-        } else if ((cx < 0 && sx < 0) || (cx >= MAP_W && sx > 0) ||
-                   (cy < 0 && sy < 0) || (cy >= MAP_H && sy > 0)) {
-            /* This axis is moving away from the map. The rest is sky. */
+        } else if ((cx < map_left && sx < 0) || (cx >= map_right && sx > 0) ||
+                   (cy < map_top && sy < 0) || (cy >= map_bottom && sy > 0)) {
+            /* This axis is moving away from what is drawn. The rest is sky. */
             break;
         }
 
@@ -739,7 +790,10 @@ void ray(uint8_t *dst, int32_t ex, int32_t ey, int32_t dx, int32_t dy,
             uint32_t s = INV(t_out);
             int top = HORIZON + (int)(((uint32_t)(EYE_H - h) * s) >> (16 - YS));
             if (top < YEND) top = YEND;
-            if (top < ybuf) {
+            if (top < ybuf && distant_top) {
+                ROWS(top, p = vox_wtab[distant_top + st]);
+                if (ybuf == YEND) goto done;
+            } else if (top < ybuf) {
                 /* The ray is over the voxel at eye + direction * depth, and
                  * the depth on a row is row_t's for it times how far below
                  * the eye this top is. Direction times that, as Q18, is the
@@ -891,8 +945,17 @@ static void columns(int first) {
 /* Each SH-2 has a cache of its own, and this one has not seen what the
  * primary wrote to the world since the last frame. Forget everything. */
 void persp_secondary(void) {
-    while (MARS_SYS_COMM6 != SECONDARY_GO);
+    unsigned asked;
+#ifdef POLY
+    while ((asked = MARS_SYS_COMM6) != SECONDARY_GO && asked != POLY_GO);
+#else
+    while ((asked = MARS_SYS_COMM6) != SECONDARY_GO);
+#endif
     CacheControl(SH2_CCTL_CP | SH2_CCTL_CE);
+#ifdef POLY
+    if (asked == POLY_GO) poly_secondary();
+    else
+#endif
     columns(1);
     MARS_SYS_COMM6 = 0;
 }
@@ -1055,11 +1118,81 @@ static void lens(int flat, int pull, int res) {
     }
 }
 
+/* Rays during play stop this many cells outside the room the hero is in.
+ * In a passage the same border goes round all of the passage that has
+ * been found, and in a dark room round the hero. */
+#define ROOM_BORDER 2
+/* A passage is drawn this many cells ahead of the hero the way the eye
+ * looks, this many behind him and this many to either side, before the
+ * border. With POLY it is polygons, and these are what their grid of
+ * corners has room for: the picture shows about fourteen cells ahead of
+ * him and five behind. Rays are too slow to be given that much of a level
+ * that is half passages. HALL_POLY=0 leaves passages to the rays in a POLY
+ * build. */
+#ifndef HALL_POLY
+#ifdef POLY
+#define HALL_POLY 1
+#else
+#define HALL_POLY 0
+#endif
+#endif
+#ifndef HALL_REACH
+#define HALL_REACH 4
+#endif
+#define HALL_AHEAD  (HALL_POLY ? 9 : HALL_REACH)
+#define HALL_BEHIND (HALL_POLY ? 3 : HALL_REACH)
+#define HALL_ACROSS (HALL_POLY ? 11 : HALL_REACH)
+
 static void render_view(uint16_t *fb, int32_t x, int32_t y, sh2z_fx_t s, sh2z_fx_t c,
-                        int pull, int flat, int res) {
+                        int pull, int flat, int res, int gameplay) {
     job.s = s;
     job.c = c;
     lens(flat, pull, res);
+    job.texture_depth = gameplay ? (job.eye_h + 5 * CELL) << 16 : INT32_MAX;
+
+    int lit_room = 0, hall = 0;
+    job.view_left = job.view_top = 0;
+    job.view_right = MAP_W;
+    job.view_bottom = MAP_H;
+#ifndef FULL_VIEW
+    if (gameplay) {
+        int room[4];
+        if (rogue_room(room)) {
+            lit_room = 1;
+        } else {
+            /* A passage, or a dark room. What of it has been found is
+             * drawn so many cells ahead of the hero, behind him and to
+             * either side. Forward is (c, s): the cells are counted along
+             * whichever of the map's two ways that is nearer to. */
+            int along_y = (s < 0 ? -s : s) >= (c < 0 ? -c : c), back = along_y ? s < 0 : c < 0;
+            int lo = back ? HALL_AHEAD : HALL_BEHIND, hi = back ? HALL_BEHIND : HALL_AHEAD;
+            int x_lo = along_y ? HALL_ACROSS : lo, x_hi = along_y ? HALL_ACROSS : hi;
+            int y_lo = along_y ? lo : HALL_ACROSS, y_hi = along_y ? hi : HALL_ACROSS;
+            int found[4] = { vox_hero_cx - x_lo, vox_hero_cy - y_lo, vox_hero_cx + x_hi, vox_hero_cy + y_hi };
+            room[0] = room[2] = vox_hero_cx;
+            room[1] = room[3] = vox_hero_cy;
+#ifndef HALL_NEAR
+            /* A dark room is all of that with polygons, which draw what
+             * the hero remembers of it for next to nothing. The rays keep
+             * to where he stands. */
+            if (vox_passage(room) || HALL_POLY) {
+                if (!vox_passage(room)) for (int k = 0; k < 4; k++) room[k] = found[k];
+                if (room[0] < found[0]) room[0] = found[0];
+                if (room[1] < found[1]) room[1] = found[1];
+                if (room[2] > found[2]) room[2] = found[2];
+                if (room[3] > found[3]) room[3] = found[3];
+                hall = 1;
+            }
+#else
+            (void)found;
+#endif
+        }
+        if (room[0] - ROOM_BORDER > 0) job.view_left = room[0] - ROOM_BORDER;
+        if (room[1] - ROOM_BORDER > 0) job.view_top = room[1] - ROOM_BORDER;
+        if (room[2] + ROOM_BORDER + 1 < MAP_W) job.view_right = room[2] + ROOM_BORDER + 1;
+        if (room[3] + ROOM_BORDER + 1 < MAP_H) job.view_bottom = room[3] + ROOM_BORDER + 1;
+    }
+#endif
 
     /* Forward is (c, s) on the ground, right is (-s, c). The eye is as far
      * back as it is high. */
@@ -1067,10 +1200,22 @@ static void render_view(uint16_t *fb, int32_t x, int32_t y, sh2z_fx_t s, sh2z_fx
     job.ey = y - s * job.eye_h;
     job.fb = fb;
 
+#ifdef POLY
+    /* The hero's lit room is drawn as polygons. Everything else, and a
+     * room too large for them, is left to the rays. */
+    if ((lit_room || (hall && HALL_POLY)) && !bestiary_active && !arrival_altitude && poly_frame()) return;
+#else
+    (void)lit_room;
+    (void)hall;
+#endif
     MARS_SYS_COMM6 = SECONDARY_GO;
     columns(0);
     while (MARS_SYS_COMM6 == SECONDARY_GO);
-    if (!bestiary_active) pieces();
+    int show_pieces = !bestiary_active;
+#ifdef RENDER_TEST
+    if (test_hide_actors) show_pieces = 0;
+#endif
+    if (show_pieces) pieces();
     if (arrival_altitude) arrival_hero();
 
     /* Two line offsets per aligned longword. The 112-row modes map
@@ -1089,7 +1234,13 @@ static void render_view(uint16_t *fb, int32_t x, int32_t y, sh2z_fx_t s, sh2z_fx
 void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, int res) {
     sh2z_fx_t s, c;
     sh2z_sincos(yaw, &s, &c);
-    render_view(fb, x << 16, y << 16, s, c, pull, flat, res);
+    render_view(fb, x << 16, y << 16, s, c, pull, flat, res, 0);
+}
+
+void persp_render_gameplay(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, int res) {
+    sh2z_fx_t s, c;
+    sh2z_sincos(yaw, &s, &c);
+    render_view(fb, x << 16, y << 16, s, c, pull, flat, res, 1);
 }
 
 void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge) {
@@ -1145,7 +1296,7 @@ void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge) {
      * fractional voxel so its screen position stays fixed as we orbit. */
     render_view(fb, ((CX * CELL + CELL / 2) << 16) + s * 12,
                 ((CY * CELL + CELL / 2) << 16) - c * 12,
-                s, c, -265, 0, PERSP_RES_FINE);
+                s, c, -265, 0, PERSP_RES_FINE, 0);
 }
 
 void persp_bestiary_end(void) {

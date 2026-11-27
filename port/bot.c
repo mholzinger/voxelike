@@ -5,6 +5,7 @@
  * plat_getkey like a person would: Rogue cannot tell the difference. */
 #ifdef BOT
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <curses.h>
 #include "rogue.h"
@@ -14,8 +15,13 @@
 #define USE_EVERY	25	/* turns between trying something from the pack */
 #define LOOT_TURNS	150	/* turns on a level spent collecting things first */
 
+#ifdef RENDER_TEST
+static short (*steps_to)[NUMCOLS];
+static uint16_t *queue;
+#else
 static short steps_to[NUMLINES][NUMCOLS];
-static coord queue[NUMLINES * NUMCOLS];
+static uint16_t queue[NUMLINES * NUMCOLS];
+#endif
 static char dirs[] = "hjklyubn";
 static int ddx[] = { -1, 0, 0, 1, -1, 1, -1, 1 };
 static int ddy[] = { 0, 1, -1, 0, -1, -1, 1, 1 };
@@ -65,17 +71,18 @@ flood(int loot)
 	    if (steps_to[obj->o_pos.y][obj->o_pos.x] == 0)
 		continue;
 	    steps_to[obj->o_pos.y][obj->o_pos.x] = 0;
-	    queue[tail++] = obj->o_pos;
+	    queue[tail++] = obj->o_pos.y * NUMCOLS + obj->o_pos.x;
 	}
     }
     else
     {
 	steps_to[stairs.y][stairs.x] = 0;
-	queue[tail++] = stairs;
+	queue[tail++] = stairs.y * NUMCOLS + stairs.x;
     }
     while (head < tail)
     {
-	c = queue[head++];
+	int cell = queue[head++];
+	c = (coord){ cell % NUMCOLS, cell / NUMCOLS };
 	for (i = 0; i < 8; i++)
 	{
 	    n.x = c.x + ddx[i];
@@ -85,7 +92,7 @@ flood(int loot)
 	    if (i >= 4 && (walkable(n.y, c.x) != 1 || walkable(c.y, n.x) != 1))
 		continue;
 	    steps_to[n.y][n.x] = steps_to[c.y][c.x] + 1;
-	    queue[tail++] = n;
+	    queue[tail++] = n.y * NUMCOLS + n.x;
 	}
     }
 }
@@ -195,6 +202,16 @@ rogue_bot_key(void)
     if (turns % USE_EVERY == 0 && (key = try_item()) != 0)
 	return key;
 
+#ifdef RENDER_TEST
+    /* Reuse Rogue's existing heap so the test bot does not consume the
+     * renderer's stack reserve. Allocate only when a path is needed. */
+    if (steps_to == NULL)
+        steps_to = malloc(NUMLINES * sizeof(*steps_to));
+    if (queue == NULL)
+        queue = malloc(NUMLINES * NUMCOLS * sizeof(*queue));
+    if (steps_to == NULL || queue == NULL)
+        return 's';
+#endif
     best = -1;
     if (level_turns < LOOT_TURNS && inpack < MAXPACK - 2)
     {

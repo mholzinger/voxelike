@@ -22,8 +22,9 @@ SEARCH_DIR(.)
  * .                    .
  * .                    .
  * .                    .
- * |        __stack     | top of stack (for Master SH2)
- * +--------------------+ <- 0x0603FC00
+ * |        __stack     | top of primary stack, bottom of secondary stack
+ * |        __slave_stack | top of secondary stack
+ * +--------------------+ <- 0x06040000
  */
 
 MEMORY {
@@ -31,7 +32,10 @@ MEMORY {
 	ram (wx) : ORIGIN = 0x06000000, LENGTH = 0x0003FC00
 }
 
-PROVIDE (__stack = 0x0603FC00);
+/* The primary draws from inside Rogue's call stack. The secondary enters
+ * the renderer directly from its worker loop and needs less stack depth. */
+__stack = 0x0603F800;
+__slave_stack = 0x06040000;
 
 SECTIONS {
 	.text 0x02000000 : AT(0x00000000) {
@@ -100,6 +104,8 @@ SECTIONS {
 		__end = _end;
 		end = _end;
 	} > ram
+
+	ASSERT(__end <= __stack - 0xC00, "SH-2 static data leaves less than 3 KiB of primary stack")
 
 	.eh_frame 0 (NOLOAD) :
 	{

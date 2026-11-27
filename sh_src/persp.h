@@ -27,6 +27,9 @@ void persp_hero_shatter(void);
 /* Restamp the creatures. hero_buried crops that many layers from the
  * hero's feet, raising the head out of the floor as it counts down to zero. */
 void persp_creatures(int hero_buried);
+#ifdef RENDER_TEST
+void persp_test_actors(int visible);
+#endif
 void persp_stair_hop(int sink, int offset, int hop);
 /* Negative hides the hero, zero places him on the floor. */
 void persp_arrival_hero(int altitude);
@@ -50,6 +53,7 @@ void game_toggle_camera(void);
  * the perspective out: 0 is all of it, and at 256, looking north, the
  * picture is the fixed view's. res is one of PERSP_RES_x. */
 void persp_render(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, int res);
+void persp_render_gameplay(uint16_t *fb, int x, int y, uint16_t yaw, int pull, int flat, int res);
 
 /* The secondary SH-2's side of a frame: wait to be asked, draw its share. */
 void persp_secondary(void);

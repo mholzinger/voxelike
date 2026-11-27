@@ -1,0 +1,12 @@
+plain room
+doorway
+stairs room
+dark room
+dark room corner
+crowded room
+passage east-west
+passage south end
+passage middle
+passage by a room
+maze
+maze edge

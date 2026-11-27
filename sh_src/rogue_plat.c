@@ -1,6 +1,7 @@
 #include "mars.h"
 #include "voxel.h"
 #include "text.h"
+#include "minimap.h"
 #include "sfx.h"
 #include "persp.h"
 #include "../port/plat.h"
@@ -59,7 +60,9 @@ int plat_step_frames = STEP;
 #define STATUS_ROW    25
 
 unsigned long plat_ticks(void) {
-#ifdef BENCH
+#if defined(RENDER_TEST)
+	return RENDER_TEST;
+#elif defined(BENCH)
 	return BENCH;   /* the dungeon's seed: the same one every run */
 #endif
 	return MARS_SYS_COMM12;
@@ -250,6 +253,8 @@ static void box_footer(int x, int y, int width, const char *label) {
 	text_put(x + width - len - 2, y, label, len, TEXT_HUD, 1);
 }
 
+#define SNAP_TEXT_(x) #x
+#define SNAP_TEXT(x)  SNAP_TEXT_(x)
 #define RES_SHOWN     150   /* vblanks a new resolution's name stays up */
 
 static char *put_number(char *p, const char *label, unsigned n) {
@@ -440,6 +445,8 @@ static int compose_hud(void) {
 		text_box_outline(HUD_X, 0, HUD_W, y + 1);
 		bottom = y;
 	}
+	/* The map has the corner a message would be boxed in. */
+	if(!bottom) minimap_place();
 	hud_status();
 #ifdef PERSP
 	{
@@ -458,6 +465,61 @@ static int compose_hud(void) {
 		for(const char *r = res_name[cam_res]; *r; ) *p++ = *r++;
 		*p = 0;
 		text_put(HUD_X, STATUS_ROW - 2, line, HUD_W, TEXT_YELLOW, 1);
+#ifdef SNAP
+		/* Every station timed: the table, to be photographed. The top
+		 * line says which build it is of. */
+		extern struct { uint16_t median, worst; } snap_result[];
+		extern int snap_done;
+		if(snap_done) {
+			static const char build[] = "SNAP"
+#ifdef POLY
+				" POLY=" SNAP_TEXT(POLY)
+#endif
+#ifdef TERRAIN_ROM
+				" TERRAIN_ROM"
+#endif
+#ifdef SNAP_TAG
+				" " SNAP_TEXT(SNAP_TAG)
+#endif
+				;
+			unsigned sum = 0, worst = 0;
+			text_put(HUD_X, 1, build, HUD_W, TEXT_YELLOW, 1);
+			text_put(HUD_X, 2, "STATION              MEDIAN  WORST", HUD_W, TEXT_YELLOW, 1);
+			for(int i = 0; i <= snap_done; i++) {
+				const char *name = i < snap_done ? rogue_snap_name(i) : "MEAN, WORST";
+				unsigned median = i < snap_done ? snap_result[i].median : sum / (unsigned)snap_done;
+				if(i < snap_done) {
+					sum += median;
+					if(snap_result[i].worst > worst) worst = snap_result[i].worst;
+				}
+				for(p = line; *name && p < line + 20; ) *p++ = *name++;
+				while(p < line + 34) *p++ = ' ';
+				unsigned n = median;
+				for(char *q = line + 26; n; n /= 10) *q-- = (char)('0' + n % 10);
+				n = i < snap_done ? snap_result[i].worst : worst;
+				for(char *q = line + 33; n; n /= 10) *q-- = (char)('0' + n % 10);
+				*p = 0;
+				text_put(HUD_X, 3 + i, line, HUD_W, i < snap_done ? TEXT_WHITE : TEXT_YELLOW, 1);
+			}
+		}
+#endif
+#ifdef RENDER_TEST
+		extern uint16_t test_hall_updates, test_hall_update_ticks;
+		p = put_number(line, "HALL UPDATES ", test_hall_updates);
+		p = put_number(p, " MEAN ", test_hall_update_ticks);
+		*p = 0;
+		text_put(HUD_X, STATUS_ROW - 7, line, HUD_W, TEXT_YELLOW, 1);
+		extern struct { uint16_t count, full, terrain; } test_render_result[3];
+		static const char *const room[] = { "ROOM ", "HALL ", "FIGHT " };
+		text_put(HUD_X, STATUS_ROW - 6, "PAIRS   FULL   TERRAIN (TICKS)", HUD_W, TEXT_YELLOW, 1);
+		for(int i = 0; i < 3; i++) {
+			p = put_number(line, room[i], test_render_result[i].count);
+			p = put_number(p, "    ", test_render_result[i].full);
+			p = put_number(p, "    ", test_render_result[i].terrain);
+			*p = 0;
+			text_put(HUD_X, STATUS_ROW - 5 + i, line, HUD_W, TEXT_YELLOW, 1);
+		}
+#endif
 		(void)cam_res_at;
 #else
 		/* The resolution names itself for a moment when it is changed. */
@@ -891,6 +953,10 @@ static int command_key(void) {
 		}
 		return key;
 	}
+#ifdef RENDER_TEST
+	poll(game_frame);
+	return '.';
+#endif
 #endif
 	uint16_t pending = 0;
 #if defined(PERSP) && !defined(BOT) && !defined(BENCH)
@@ -945,11 +1011,14 @@ static int command_key(void) {
 		 * clock, not by frames, which the two views draw at different rates. */
 		if(vox_hero_busy) idle_since = MARS_SYS_COMM12;
 #ifdef BENCH
-		/* Nothing may change between runs, but the readout must. */
-		static uint32_t told;
 		idle_since = MARS_SYS_COMM12;
-		if(idle_since - told >= 60) {
-			told = idle_since;
+#endif
+#if defined(STATS) && defined(PERSP)
+		/* Refresh the readout even when Rogue's screen hasn't changed. */
+		static uint32_t told;
+		uint32_t now = MARS_SYS_COMM12;
+		if(now - told >= 60) {
+			told = now;
 			compose_hud();
 			text_commit();
 		}
