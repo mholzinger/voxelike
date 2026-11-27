@@ -1,5 +1,7 @@
 #!/bin/sh
-# A release's notes: what was committed since the release before it.
+# A release's notes: what release-notes/<version>.md says changed, if
+# somebody wrote one, and otherwise what was committed since the release
+# before it.
 #   tools/release_notes.sh 0.1.0-alpha.3 [v0.1.0-alpha.2] [rom]
 set -eu
 V=$1
@@ -10,7 +12,10 @@ echo
 echo "Alpha: Rogue 5.4.4 in voxels on the Sega 32X. Things are missing and things will change."
 echo
 echo "### Changes"
-if [ -n "$PREV" ]; then
+WRITTEN=$(dirname "$0")/../release-notes/$V.md
+if [ -f "$WRITTEN" ]; then
+	cat "$WRITTEN"
+elif [ -n "$PREV" ]; then
 	git log --no-merges --pretty='- %s' "$PREV..HEAD"
 else
 	echo "- The first alpha build."
