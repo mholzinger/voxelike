@@ -102,9 +102,14 @@ endif
 ifdef FLAT
 override PERSP :=
 endif
-# make POLY=1: the hero's lit room is drawn as flat polygons (sh_src/poly.c).
-# Passages, dark rooms and the scripted scenes are still drawn by the rays.
-ifdef POLY
+# Rooms, passages and dark rooms are drawn as polygons in the rays' bitmaps
+# (sh_src/poly.c), and the rays draw only the scripted scenes. make POLY=1
+# is the polygons in flat colours, and make POLY= is the rays for everything.
+POLY ?= 2
+ifeq ($(PERSP),)
+override POLY :=
+endif
+ifneq ($(POLY),)
 SHCCFLAGS += -DPOLY=$(POLY) $(if $(POLY_OFF),-DPOLY_OFF=$(POLY_OFF)) $(if $(POLY_PROF),-DPOLY_PROF)
 endif
 # make POLYBENCH=1: a room of flat polygons painted by the fill hardware,

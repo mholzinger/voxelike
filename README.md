@@ -25,7 +25,7 @@ make BENCH=7    # the same 256 frames every run, for timing (tools/mbench.sh)
 make FULL_VIEW=1       # rays cross the whole map, not only the hero's room
 make RENDER_TEST=7     # a bot plays dungeon 7 and times rooms, passages and fights
 make FOLD_CHECK=1      # count cells the short screen fold-in missed (there should be none)
-make POLY=1            # the hero's lit room is drawn as flat polygons, not by rays
+make POLY=             # rays draw everything, not polygons (POLY=1: polygons in flat colours; the default is 2, in the rays' bitmaps)
 make POLYBENCH=1       # rom/polybench.32x: a room of flat polygons, timed (2: on one SH-2; 3: both draw; EYE=128..208; ACTORS=0..8)
 make VERSION=0.1.0-alpha.1   # the name on the title screen; without it, dev- and the commit
 make ARMOR=7 WEAPON=5   # dress the hero for looking at the art (Rogue's numbers)
@@ -205,9 +205,10 @@ about 7,260 ticks to 2,600 in a passage. `make RENDER_TEST=7 FOLD_CHECK=1`
 runs the whole-map pass after the short one and counts what it would still
 change in `fold_missed`: zero over five levels.
 
-`make POLY=1` draws the lit room the hero is in as flat polygons
-(`sh_src/poly.c`); passages, dark rooms and the scripted scenes are still
-drawn by the rays. A cell that is one height all over is a box, its top
+The game draws the hero's room, passages and dark rooms as polygons
+(`sh_src/poly.c`), with the rays' bitmaps on floors and the tops of walls;
+the rays still draw the scripted scenes. `make POLY=` gives everything
+back to the rays, and `make POLY=1` is the polygons in flat colours. A cell that is one height all over is a box, its top
 and the sides that stand above their neighbours each one colour, with
 floors in two shades cell and cell about (a floor is a slab one voxel
 high, however far its plinth has lifted it; a wall is two). A door, stairs, a thing on the
