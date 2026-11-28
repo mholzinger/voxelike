@@ -55,6 +55,7 @@ typedef struct {
     uint8_t face;          /* way it looks: 0 south, 1 west, 2 north, 3 east */
     uint8_t attack;        /* countdown for the hero’s equipped attack */
     uint8_t flash;         /* CRAM index it is flashing, or 0 */
+    uint8_t defeated;      /* the staged target awaiting its death pose */
 } vox_creature_t;
 
 /* The hero's body retreat/lunge and the held weapon's offset and tilt. */

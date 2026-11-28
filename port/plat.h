@@ -46,4 +46,6 @@ void rogue_status(rogue_status_t *status);
 int  rogue_pack(int index, char *buf, int max);   /* Name of the index'th matching item. Returns its pack letter or 0. */
 int  rogue_pickup_command(int slot);       /* controller shortcut, or 0 */
 
+void rogue_note_kill(unsigned long id, int weapon, int launched);
+
 #endif

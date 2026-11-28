@@ -2,6 +2,7 @@
 #define PERSP_H
 
 #include <stdint.h>
+#include "../port/death_style.h"
 
 /* How finely the perspective picture is drawn. A voxel at the hero covers
  * the same 2x2 screen pixels in all of them; what changes is how many
@@ -22,7 +23,11 @@ void persp_sync(int terrain_changed);
 
 /* Height of the equipped hero model in voxel layers. */
 int persp_hero_height(void);
-void persp_hero_shatter(void);
+void persp_hero_shatter(death_blow_t blow);
+void persp_death_pose(death_blow_t blow, int age, int enemy);
+void persp_release_defeat(death_blow_t blow);
+void persp_defeat_arrow(int hx, int hy, int ex, int ey, int progress);
+void persp_pool_bubble(int cx, int cy, int height);
 
 /* Restamp the creatures. hero_buried crops that many layers from the
  * hero's feet, raising the head out of the floor as it counts down to zero. */
@@ -33,7 +38,7 @@ void persp_test_actors(int visible);
 void persp_stair_hop(int sink, int offset, int hop);
 /* Negative hides the hero, zero places him on the floor. */
 void persp_arrival_hero(int altitude);
-void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge);
+void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge, death_blow_t blow, int age);
 void persp_bestiary_end(void);
 
 /* Tint the existing floor surface during the hero’s death shot. */

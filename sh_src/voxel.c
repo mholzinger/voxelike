@@ -71,6 +71,15 @@ static ent_t ents[MAX_ENTS];
 static int n_ents;
 static ent_t defeated;
 static int defeat_staged;
+static uint32_t killing_id;
+static death_style_t killing_style, defeat_style;
+
+void vox_note_kill(unsigned long id, death_style_t style) {
+    killing_id = (uint32_t)id;
+    killing_style = style;
+}
+
+death_style_t vox_defeat_style(void) { return defeat_style; }
 static uint32_t duel_foe;
 static int hero_hit_pending;
 static uint32_t impact_id;
@@ -89,7 +98,12 @@ typedef struct {
     uint8_t chunk;        /* particle size and whether it can float */
 } part_t;
 
-static part_t parts[MAX_PARTS];
+static part_t dungeon_parts[MAX_PARTS];
+static part_t preview_parts[MAX_PARTS];
+static part_t *parts = dungeon_parts;
+static int dungeon_part_count, preview_part_count;
+static int preview_tick = -1;
+static uint32_t dungeon_seed = 12345, preview_seed;
 static int n_parts;
 static int last_depth;
 
@@ -332,6 +346,7 @@ static void animate_assembly(void) {
 
 /* How high the ground is under the middle of a footprint at (x, y). */
 static int lift_under(int x, int y) {
+    if (parts == preview_parts) return 0;
     return vox_lift[(y + CELL / 2) >> 3][(x + CELL / 2) >> 3];
 }
 
@@ -403,15 +418,16 @@ static void ent_place(uint32_t id, int kind, int cx, int cy, int frames) {
 }
 
 static void stale_part(const part_t *p) {
+    if (parts == preview_parts) return;
     int x = p->x >> 4;
     int r = (p->y >> 4) - (p->z >> 4) - ROW_MIN;
     stale(x, x, r, r);
 }
 
 static unsigned chance(void) {
-    static uint32_t seed = 12345;
-    seed = seed * 1103515245u + 12345u;
-    return seed >> 16;
+    uint32_t *seed = parts == preview_parts ? &preview_seed : &dungeon_seed;
+    *seed = *seed * 1103515245u + 12345u;
+    return *seed >> 16;
 }
 
 int vox_stained(int cx, int cy) {
@@ -527,15 +543,6 @@ int vox_duel_target(vox_duel_t *shot) {
     return 1;
 }
 
-void vox_release_defeat(void) {
-    if (!defeat_staged) return;
-    stale_ent(&defeated);
-    shatter(&defeated, 1);
-    stain_enemy_floor(&defeated);
-    vox_events |= VOX_BURST;
-    defeat_staged = 0;
-}
-
 void vox_hero_hit_flash(int on) {
     for (int i = 0; i < n_ents; i++) {
         ent_t *e = &ents[i];
@@ -574,54 +581,255 @@ static void spatter(const ent_t *e, int count) {
     }
 }
 
-void vox_hero_spatter(void) {
-    for (int i = 0; i < n_ents; i++) {
-        const ent_t *e = &ents[i];
-        if (e->id != HERO_ID) continue;
-        /* Reserve room for the spray and the later body breakup. */
-        while (n_parts > MAX_PARTS / 8) stale_part(&parts[--n_parts]);
-        spatter(e, 28);
-        return;
+/* The impact has its own palette. Body fragments keep their material. */
+static void hero_impact(const ent_t *e, death_blow_t blow) {
+    static const struct {
+        uint8_t material, count, spread, push, rise;
+    } impact[DEATH_STYLE_COUNT] = {
+        [DEATH_CLAW]  = { MT_RED,    28, 25,  0, 17 },
+        [DEATH_CUT]   = { MT_RED,    25, 12,  0, 12 },
+        [DEATH_SLICES]= { MT_RED,    24, 15,  0, 10 },
+        [DEATH_CRUSH] = { MT_RED,    22, 19,  6,  4 },
+        [DEATH_PIERCE] = { MT_RED,    20,  6, 32,  8 },
+        [DEATH_DRAIN] = { MT_PURPLE, 14,  9,  0, 16 },
+        [DEATH_FLAME] = { MT_ORANGE, 30, 18,  9, 26 },
+        [DEATH_FROST] = { MT_ICE,    20, 10,  6,  8 },
+        [DEATH_SPARK] = { MT_YELLOW, 24, 29,  5, 20 },
+    };
+    unsigned style = blow.style;
+    if (!impact[style].count) return;
+    while (n_parts > MAX_PARTS / 8) stale_part(&parts[--n_parts]);
+    int x = e->x + e->ox + CELL / 2, y = e->y + e->oy + CELL / 2;
+    int floor = lift_under(x - CELL / 2, y - CELL / 2) + e->z;
+    int spread = impact[style].spread;
+    for (unsigned n = 0; n < impact[style].count && n_parts < MAX_PARTS; n++) {
+        int vx = (int)(chance() % (2 * spread + 1)) - spread + blow.dx * impact[style].push;
+        int vy = (int)(chance() % (2 * spread + 1)) - spread + blow.dy * impact[style].push;
+        int vz = impact[style].rise + (int)(chance() & 15);
+        unsigned material = impact[style].material;
+        if (style == DEATH_FLAME && (n & 2)) material = MT_YELLOW;
+        if (style == DEATH_SPARK && (n & 2)) material = MT_PAPER;
+        int z = floor + (style == DEATH_CRUSH ? 3 : 6) + (int)(chance() & 3);
+        hero_fragment(x, y, z, vx, vy, vz, MAT(material) | (n & 1), PART_SMALL);
     }
 }
 
-void vox_hero_shatter(const vcol_t model[CELL][CELL]) {
+void vox_hero_spatter(death_blow_t blow) {
+    for (int i = 0; i < n_ents; i++) {
+        if (ents[i].id == HERO_ID) {
+            hero_impact(&ents[i], blow);
+            return;
+        }
+    }
+}
+
+/* Move intact sections first. The breakup starts from this same pose. */
+int vox_body_height(const vcol_t model[CELL][CELL]) {
+    int height = 0;
+    for (int x = 0; x < CELL; x++)
+        for (int y = 0; y < CELL; y++)
+            if (model[x][y].h > height) height = model[x][y].h;
+    return height;
+}
+
+int vox_enemy_pose_ticks(death_style_t style) {
+    static const uint8_t ticks[DEATH_STYLE_COUNT] = {
+        [DEATH_CUT] = DEATH_SPLIT_TICKS, [DEATH_SLICES] = DEATH_SPLIT_TICKS,
+        [DEATH_CRUSH] = DEATH_SINK_TICKS + 10,
+        [DEATH_BOW_STRIKE] = 14, [DEATH_ARROW_SHOT] = 23, [DEATH_ARROW] = 12,
+        [DEATH_DAGGER] = 16, [DEATH_DART] = 22, [DEATH_SHURIKEN] = 20,
+        [DEATH_SPEAR] = 20,
+    };
+    return ticks[style];
+}
+
+int vox_hero_death_ticks(death_style_t style) {
+    static const uint8_t ticks[DEATH_STYLE_COUNT] = {
+        [DEATH_CLAW] = 13, [DEATH_PIERCE] = 15, [DEATH_DRAIN] = 26,
+        [DEATH_FLAME] = 15, [DEATH_FROST] = 30, [DEATH_SPARK] = 7,
+        [DEATH_COLLAPSE] = 24, [DEATH_SLICES] = DEATH_SPLIT_TICKS,
+#ifdef PERSP
+        [DEATH_CUT] = DEATH_SPLIT_TICKS, [DEATH_CRUSH] = DEATH_SINK_TICKS + 10,
+#else
+        [DEATH_CUT] = 9, [DEATH_CRUSH] = 5,
+#endif
+    };
+    return ticks[style];
+}
+
+void vox_death_pose(death_blow_t blow, int age, int cut, int *x, int *y, int *z) {
+    if (blow.style == DEATH_CRUSH) {
+        /* Three short pummels, then descend through the floor. */
+        static const uint8_t stomp[] = { 0, 1, 2, 1, 0, 0 };
+        int sink = age < 18 ? stomp[age % 6] : (age - 18) * COL_MAXH / 22;
+        *z -= sink;
+        return;
+    }
+    int push = 0, drop = 0;
+    switch (blow.style) {
+        case DEATH_BOW_STRIKE:
+            push = age < 6 ? age / 2 : (14 - age) / 4;
+            drop = age > 8 ? 2 : 0;
+            break;
+        case DEATH_ARROW_SHOT:
+            push = age < 6 ? age : 5;
+            drop = age > 13 ? (age - 13) / 3 : 0;
+            break;
+        case DEATH_ARROW:
+            push = age < 6 ? age / 3 : 1;
+            drop = age > 6 ? 1 : 0;
+            break;
+        case DEATH_DAGGER:
+            drop = age / 4;
+            break;
+        case DEATH_DART:
+            push = (age / 2) % 3 - 1;
+            drop = age > 12 ? (age - 12) / 3 : 0;
+            break;
+        case DEATH_SHURIKEN: {
+            int turn = age / 4;
+            for (int i = 0; i < (turn & 3); i++) {
+                int old_x = *x;
+                *x = CELL - 1 - *y;
+                *y = old_x;
+            }
+            drop = age / 7;
+            break;
+        }
+        case DEATH_SPEAR:
+            push = age / 3;
+            drop = age > 12 ? (age - 12) / 4 : 0;
+            break;
+        default: break;
+    }
+    *x += blow.dx * push;
+    *y += blow.dy * push;
+    *z -= drop;
+    int slide = age < 6 ? 0 : (age - 6) * 4 / (DEATH_SPLIT_TICKS - 6);
+    if (blow.style == DEATH_CUT) {
+        int side = (blow.dx ? *x : *y) < CELL / 2 ? -1 : 1;
+        *x += blow.dx * side * slide;
+        *y += blow.dy * side * slide;
+    } else if (blow.style == DEATH_SLICES) {
+        int band = *z >= 2 * cut ? 2 : *z >= cut ? 1 : 0;
+        int shift = band == 1 ? -slide : band == 2 ? slide : 0;
+        *x += blow.dx * shift;
+        *y += blow.dy * shift;
+        /* A brief vertical gap makes the three cuts readable as slabs. */
+        *z += band * (age < 6 ? age / 3 : age < 24 ? 2 : (DEATH_SPLIT_TICKS - age) / 3);
+    }
+}
+
+static void pool_pop(const ent_t *e) {
+    int x = e->tx + CELL / 2, y = e->ty + CELL / 2;
+    int z = parts == preview_parts ? 2 : vox_height_at(e->tx / CELL, e->ty / CELL) + 1;
+    for (int n = 0; n < 5 && n_parts < MAX_PARTS; n++)
+        hero_fragment(x, y, z, (n - 2) * 6, ((n * 3) % 5 - 2) * 5,
+                      8 - (n & 1) * 3, MAT(MT_RED) | 1, PART_SMALL);
+}
+
+void vox_hero_pool_pop(void) {
     for (int i = 0; i < n_ents; i++) {
         ent_t *e = &ents[i];
         if (e->id != HERO_ID) continue;
-        int ex = e->x + e->ox, ey = e->y + e->oy;
-        int floor = lift_under(ex, ey) + e->z;
-
-        if (model) {
-            unsigned floating_bands = 0;
-            for (int x = 0; x < CELL; x++) {
-                for (int y = 0; y < CELL; y++) {
-                    const vcol_t *col = vox_model_column(model, e->face, x, y);
-                    for (int z = 0; z < col->h && n_parts < MAX_PARTS; z++) {
-                        unsigned material = col->c[z];
-                        if (material == MAT(MT_SHADOW) || (x + y + z) % 6) continue;
-                        int vx = (2 * x - 7) * 2 + (int)(chance() & 7) - 3;
-                        int vy = (2 * y - 7) * 2 + (int)(chance() & 7) - 3;
-                        int vz = 4 + (int)(chance() & 7);
-                        int kind = PART_CHUNK;
-                        unsigned band = z >= 9 ? 2 : z >= 3 ? 1 : 0;
-                        if (x >= 2 && x <= 5 && y >= 2 && y <= 5 && !(floating_bands & (1u << band))) {
-                            floating_bands |= 1u << band;
-                            kind = PART_BUOYANT + band;
-                            vx = vox_hero_cx;
-                            vy = vox_hero_cy;
-                        }
-                        hero_fragment(ex + x, ey + y, floor + 1 + z, vx, vy, vz, material + 1, kind);
-                    }
-                }
-            }
-        } else {
-            shatter(e, 0);
-        }
+        pool_pop(e);
         stale_ent(e);
         *e = ents[--n_ents];
         return;
     }
+}
+
+static void break_body(const ent_t *e, const vcol_t model[CELL][CELL], death_blow_t blow) {
+    static const struct {
+        uint8_t spread, push;
+        int8_t rise;
+    } breakup[DEATH_STYLE_COUNT] = {
+        [DEATH_CLAW]   = { 2,  0,   4 },
+        [DEATH_CUT]    = { 1,  0,   0 },
+        [DEATH_SLICES] = { 1,  0,   1 },
+        [DEATH_CRUSH]  = { 3,  2, -15 },
+        [DEATH_PIERCE] = { 1, 25,   4 },
+        [DEATH_DRAIN]  = { 0,  0,  -9 },
+        [DEATH_FLAME]  = { 2,  5,  23 },
+        [DEATH_FROST]  = { 1,  3,  -3 },
+        [DEATH_SPARK]  = { 3,  7,  16 },
+        [DEATH_COLLAPSE] = { 0, 0, -15 },
+        [DEATH_BOW_STRIKE] = { 2,  6, 10 },
+        [DEATH_ARROW_SHOT] = { 1, 21,  3 },
+        [DEATH_ARROW]     = { 2,  9,  1 },
+        [DEATH_DAGGER]    = { 0,  1, -8 },
+        [DEATH_DART]      = { 1,  3,  3 },
+        [DEATH_SHURIKEN]  = { 4,  2, 11 },
+        [DEATH_SPEAR]     = { 1, 23, -3 },
+    };
+    unsigned style = blow.style;
+    int ex = e->x + e->ox, ey = e->y + e->oy;
+    int floor = lift_under(ex, ey) + e->z;
+
+    if (model) {
+        int cut = style == DEATH_SLICES ? (vox_body_height(model) + 2) / 3 : 0;
+        int pose_ticks = vox_enemy_pose_ticks(blow.style);
+        unsigned floating_bands = 0;
+        for (int x = 0; x < CELL; x++) {
+            for (int y = 0; y < CELL; y++) {
+                const vcol_t *col = vox_model_column(model, e->face, x, y);
+                for (int z = 0; z < col->h && n_parts < MAX_PARTS; z++) {
+                    unsigned material = col->c[z];
+                    if (!material || material == VOX_AIR_GAP || material == MAT(MT_SHADOW) ||
+                        (x + y + z) % 6) continue;
+                    int push = breakup[style].push;
+                    int vx = (2 * x - 7) * breakup[style].spread + blow.dx * push
+                             + (int)(chance() & 7) - 3;
+                    int vy = (2 * y - 7) * breakup[style].spread + blow.dy * push
+                             + (int)(chance() & 7) - 3;
+                    int vz = breakup[style].rise + (int)(chance() & 7);
+                    int kind = PART_CHUNK;
+                    unsigned band = z >= 9 ? 2 : z >= 3 ? 1 : 0;
+                    if (!e->kind && parts != preview_parts && (style == DEATH_CLAW || style == DEATH_PIERCE) && x >= 2 && x <= 5 && y >= 2 && y <= 5 &&
+                        !(floating_bands & (1u << band))) {
+                        floating_bands |= 1u << band;
+                        kind = PART_BUOYANT + band;
+                        vx = vox_hero_cx;
+                        vy = vox_hero_cy;
+                    }
+                    int px = x, py = y, pz = z;
+                    if (pose_ticks && style != DEATH_CRUSH) {
+                        vox_death_pose(blow, pose_ticks, cut, &px, &py, &pz);
+                        if (style == DEATH_CUT || style == DEATH_SLICES) {
+                            vx += (px - x) * 3;
+                            vy += (py - y) * 3;
+                        }
+                    }
+                    if (pz < 0) continue;
+                    hero_fragment(ex + px, ey + py, floor + 1 + pz, vx, vy, vz, material + 1, kind);
+                }
+            }
+        }
+    } else {
+        shatter(e, 0);
+    }
+}
+
+void vox_hero_shatter(const vcol_t model[CELL][CELL], death_blow_t blow) {
+    for (int i = 0; i < n_ents; i++) {
+        ent_t *e = &ents[i];
+        if (e->id != HERO_ID) continue;
+        break_body(e, model, blow);
+        stale_ent(e);
+        *e = ents[--n_ents];
+        return;
+    }
+}
+
+void vox_release_defeat(const vcol_t model[CELL][CELL], death_blow_t blow) {
+    if (!defeat_staged) return;
+    stale_ent(&defeated);
+    if (blow.style == DEATH_CRUSH) pool_pop(&defeated);
+    else if (model) break_body(&defeated, model, blow);
+    else shatter(&defeated, 1);
+    stain_enemy_floor(&defeated);
+    vox_events |= VOX_BURST;
+    defeat_staged = 0;
 }
 
 int vox_particles_active(void) { return n_parts != 0; }
@@ -666,7 +874,7 @@ static void parts_animate(void) {
             continue;
         }
         int cx = p->x >> 7, cy = p->y >> 7;
-        int floor = vox_lift[cy][cx] << 4;
+        int floor = parts == preview_parts ? 16 : vox_lift[cy][cx] << 4;
         if (p->chunk >= PART_BUOYANT) {
             const vcol_t *terrain = &vox_models[vox_tile[cy][cx]].col[(p->x >> 4) & 7][(p->y >> 4) & 7];
             int surface = floor + terrain->h * 16;
@@ -683,6 +891,40 @@ static void parts_animate(void) {
         stale_part(p);
         i++;
     }
+}
+
+/* The bestiary shares the effects, but its simulation never advances the
+ * dungeon's particles, random sequence, entities or terrain. */
+void vox_preview_begin(int kind, int face, int x, int y, death_blow_t blow,
+                       const vcol_t model[CELL][CELL], int age) {
+    dungeon_part_count = n_parts;
+    parts = preview_parts;
+    n_parts = preview_part_count;
+    if (age < 0 || age < preview_tick) {
+        preview_tick = -1;
+        n_parts = 0;
+        preview_seed = 12345;
+    }
+    ent_t target = { .kind = kind, .face = face, .x = x, .y = y, .tx = x, .ty = y };
+    int release = kind ? vox_enemy_pose_ticks(blow.style) : vox_hero_death_ticks(blow.style);
+    while (preview_tick < age) {
+        int t = ++preview_tick;
+        if (t == 0) {
+            if (kind) spatter(&target, 12);
+            else hero_impact(&target, blow);
+        }
+        if (t == release) {
+            if (blow.style == DEATH_CRUSH) pool_pop(&target);
+            else break_body(&target, model, blow);
+        }
+        parts_animate();
+    }
+}
+
+void vox_preview_end(void) {
+    preview_part_count = n_parts;
+    n_parts = dungeon_part_count;
+    parts = dungeon_parts;
 }
 
 /* Wind-up, contact, follow-through. Weapon offsets are relative to the
@@ -834,6 +1076,7 @@ int vox_creature(int i, vox_creature_t *c) {
     if (defeat_staged && e->id == HERO_ID)
         c->face = facing(defeated.x - e->x, defeated.y - e->y);
     c->flash = creature_flash(e);
+    c->defeated = e == &defeated;
     return 1;
 }
 
@@ -1212,6 +1455,7 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
                     defeated = *e;
                     defeated.flash = 0;
                     defeated.face = facing(-dx, -dy);
+                    defeat_style = e->id == killing_id ? killing_style : DEATH_CLAW;
                     defeat_staged = 1;
                 } else {
                     shatter(e, 0);
@@ -1250,6 +1494,7 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
         i++;
     }
     hero_follow();
+    if (killing_id && !src->alive(killing_id)) killing_id = 0;
     return terrain_changed;
 }
 

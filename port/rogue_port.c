@@ -14,6 +14,7 @@
 #include "rogue.h"
 #include "score.h"
 #include "plat.h"
+#include "death_style.h"
 
 unsigned int numscores = 10;
 char *Numname = "Ten";
@@ -436,23 +437,87 @@ static THING *attackers[MAXATTACKERS];
 static int n_attackers;
 
 extern int __real_attack(THING *mp);
+static int attack_dx, attack_dy, bolt_fatal;
+static death_blow_t fatal_bolt;
+
+static int direction_sign(int delta)
+{
+    return (delta > 0) - (delta < 0);
+}
+
+void
+rogue_fatal_bolt(const char *name, int dx, int dy)
+{
+    fatal_bolt.style = strcmp(name, "flame") == 0 ? DEATH_FLAME :
+                       strcmp(name, "ice") == 0 ? DEATH_FROST : DEATH_SPARK;
+    fatal_bolt.dx = direction_sign(dx);
+    fatal_bolt.dy = direction_sign(dy);
+    bolt_fatal = 1;
+}
+
+static death_style_t
+death_style(char killer)
+{
+    /* Rogue gives monsters intrinsic attacks. These are animation choices. */
+    switch (killer) {
+        case 'O': return DEATH_CUT;
+        case 'H': return DEATH_SLICES;
+        case 'T': case 'Y': return DEATH_CRUSH;
+        case 'F': case 'R': case 'S': case 'U':
+        case 'a': case 'd': return DEATH_PIERCE;
+        case 'W': case 'V': return DEATH_DRAIN;
+        case 'h': case 's': return DEATH_COLLAPSE;
+        default: return killer >= 'A' && killer <= 'Z' ? DEATH_CLAW : DEATH_COLLAPSE;
+    }
+}
 
 int
 __wrap_attack(THING *mp)
 {
     if (n_attackers < MAXATTACKERS)
 	attackers[n_attackers++] = mp;
-    return __real_attack(mp);
+    attack_dx = direction_sign(hero.x - mp->t_pos.x);
+    attack_dy = direction_sign(hero.y - mp->t_pos.y);
+    {
+        int result = __real_attack(mp);
+        attack_dx = attack_dy = 0;
+        return result;
+    }
+}
+
+void
+rogue_note_kill(unsigned long id, int weapon, int launched)
+{
+    extern void vox_note_kill(unsigned long, death_style_t);
+    death_style_t style = DEATH_CLAW;
+    switch (weapon) {
+        case SWORD: style = DEATH_CUT; break;
+        case TWOSWORD: style = DEATH_SLICES; break;
+        case MACE: style = DEATH_CRUSH; break;
+        case BOW: style = DEATH_BOW_STRIKE; break;
+        case ARROW: style = launched ? DEATH_ARROW_SHOT : DEATH_ARROW; break;
+        case DAGGER: style = DEATH_DAGGER; break;
+        case DART: style = DEATH_DART; break;
+        case SHIRAKEN: style = DEATH_SHURIKEN; break;
+        case SPEAR: style = DEATH_SPEAR; break;
+    }
+    vox_note_kill(id, style);
 }
 
 /* Play the fatal blow while Rogue's dungeon still occupies its screen. */
 extern void __real_death(char monst);
-extern void plat_death(void);
+extern void plat_death(death_blow_t blow);
 
 void
 __wrap_death(char monst)
 {
-    plat_death();
+    death_blow_t blow;
+    blow.style = death_style(monst);
+    blow.dx = attack_dx;
+    blow.dy = attack_dy;
+    if (bolt_fatal) blow = fatal_bolt;
+    bolt_fatal = 0;
+    plat_death(blow);
     __real_death(monst);
 }
 

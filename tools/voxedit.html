@@ -195,6 +195,7 @@ function parseTerrain(text, file) {
  * drawn hovering is set down. */
 function build(model, solid) {
   const cols = Array.from({ length: CELL }, () => Array.from({ length: CELL }, () => []));
+  const hollow = model.file === "gear.txt" && model.name === "hero_skeleton";
   let layers = model.vox;
   if (solid && model.kind !== "top")
     while (layers.length && !layers[layers.length - 1].join("").replace(/\./g, "")) layers = layers.slice(0, -1);
@@ -205,7 +206,7 @@ function build(model, solid) {
       if (layer[y][x] === ".") continue;
       const col = cols[x][y];
       while (col.length < z) {
-        if (!solid) { col.push(""); continue; }
+        if (!solid || hollow) { col.push(""); continue; }
         // What the front view shows there: the voxel nearest the front.
         const under = layers[height - 1 - col.length];
         let seen = state.shadow;

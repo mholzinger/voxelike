@@ -362,6 +362,10 @@ animate attacks and defeats.
 
 ## Player death
 
+The hero has a voxel skeleton under the body and armor. Slicing deaths
+show the bones where the cut passes through them, with the body and
+armor still visible around the exposed faces.
+
 The camera pushes in to make the hero about 50 percent larger. The fatal
 blow sends out a spray of red voxels while the hero is still standing.
 A beat later, the equipped hero breaks into chunks that keep their model

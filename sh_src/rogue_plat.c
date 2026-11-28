@@ -13,7 +13,7 @@
 
 extern void game_frame(void);
 extern void game_blank(void);
-extern void game_death(void);
+extern void game_death(death_blow_t blow);
 extern void game_stairs_depart(void);
 extern void game_stairs_arrive(void);
 
@@ -679,19 +679,36 @@ static const char *command_line(int i) {
 }
 
 #ifdef PERSP
-extern void game_bestiary_frame(int kind, uint16_t yaw, int lunge);
+extern void game_bestiary_frame(int kind, uint16_t yaw, int lunge, death_blow_t blow, int age);
 extern void game_bestiary_end(void);
 extern void game_bestiary_wait(void);
 
 static int preview_kind, preview_dirty;
-static uint16_t preview_yaw;
-static uint32_t preview_at, preview_attack;
+static uint16_t preview_yaw, preview_death_yaw;
+static uint32_t preview_at, preview_attack, preview_death;
+static int preview_finish;
+typedef struct { const char *name; death_style_t style; } finish_t;
+static const finish_t finishes[] = {
+	{ "Mace", DEATH_CRUSH }, { "Sword", DEATH_CUT },
+	{ "Two-handed sword", DEATH_SLICES }, { "Bow and arrow", DEATH_ARROW_SHOT },
+	{ "Hand-thrown arrow", DEATH_ARROW }, { "Bow strike", DEATH_BOW_STRIKE },
+	{ "Dagger", DEATH_DAGGER }, { "Dart", DEATH_DART },
+	{ "Shuriken", DEATH_SHURIKEN }, { "Spear", DEATH_SPEAR },
+};
+
+static const finish_t player_deaths[] = {
+	{ "Pummel", DEATH_CRUSH }, { "Split", DEATH_CUT },
+	{ "Horizontal slices", DEATH_SLICES }, { "Claws", DEATH_CLAW },
+	{ "Piercing hit", DEATH_PIERCE }, { "Life drain", DEATH_DRAIN },
+	{ "Fire", DEATH_FLAME }, { "Ice", DEATH_FROST },
+	{ "Lightning", DEATH_SPARK }, { "Collapse", DEATH_COLLAPSE },
+};
+
+static const finish_t *bestiary_finishes(void) {
+	return preview_kind ? finishes : player_deaths;
+}
 
 static void bestiary_frame(void) {
-	if(!preview_kind) {
-		game_blank();
-		return;
-	}
 	uint32_t now = MARS_SYS_COMM12;
 	uint32_t elapsed = now - preview_at;
 	if(elapsed < 4 && !preview_dirty) {
@@ -702,49 +719,65 @@ static void bestiary_frame(void) {
 	unsigned phase = (now - preview_attack) / 4;
 	int lunge = preview_attack && phase < sizeof reach ? reach[phase] : 0;
 	if(preview_attack && phase >= sizeof reach) preview_attack = 0;
-	preview_yaw += (uint16_t)(elapsed * 145);
+	death_blow_t blow = { DEATH_CLAW, 0, 0 };
+	int age = -100;
+	if(preview_death) {
+		blow.style = bestiary_finishes()[preview_finish].style;
+		blow.dx = ((uint16_t)(preview_death_yaw + 0x2000) & 0x4000) != 0;
+		blow.dy = !blow.dx;
+		age = (int)(now - preview_death) - 10;
+		int release = preview_kind ? vox_enemy_pose_ticks(blow.style) : vox_hero_death_ticks(blow.style);
+		if(age >= release + 40) {
+			preview_death = 0;
+			age = -100;
+		}
+	}
+	if(!preview_death) preview_yaw += (uint16_t)(elapsed * 145);
 	preview_at = now;
 	preview_dirty = 0;
-	game_bestiary_frame(preview_kind, preview_yaw, lunge);
+	uint16_t view_yaw = preview_yaw;
+	if(age > 0 && (blow.style == DEATH_CUT || blow.style == DEATH_SLICES))
+		view_yaw += (uint16_t)((age < 20 ? age : 20) * 0x1800 / 20);
+	game_bestiary_frame(preview_kind, view_yaw, lunge, blow, age);
 }
 
 static void show_bestiary(void) {
 	enum { LIST_W = 19, LIST_ROWS = 17 };
-	uint8_t kinds[26];
-	int count = 0;
+	uint8_t kinds[27] = { 0 };
+	int count = 1;
 	for(int i = 0; i < 26; i++)
 		if(defeated_count[i]) kinds[count++] = (uint8_t)(i + 1);
 	int sel = 0, first = 0;
-	preview_kind = count ? kinds[0] : 0;
+	preview_kind = kinds[0];
 	preview_yaw = 0xD000;
-	preview_attack = 0;
+	preview_attack = preview_death = 0;
+	preview_finish = -1;
 	preview_at = MARS_SYS_COMM12;
 	for(;;) {
 		text_begin();
 		box_line(HUD_X, 2, HUD_W, "Bestiary", -1);
 		text_box_outline(HUD_X, 1, HUD_W, 3);
-		if(count) {
-			if(sel < first) first = sel;
-			if(sel >= first + LIST_ROWS) first = sel - LIST_ROWS + 1;
-			int shown = count - first < LIST_ROWS ? count - first : LIST_ROWS;
-			for(int i = 0; i < shown; i++) {
-				text_fill(HUD_X + 1, i + 5, LIST_W - 2, TEXT_HUD);
-				if(first + i == sel) text_tile(HUD_X + 1, i + 5, TEXT_HUD | HUD_CURSOR);
-				text_put(HUD_X + 2, i + 5, rogue_monster_name(kinds[first + i]), LIST_W - 3, TEXT_HUD, 1);
-			}
-			text_box_outline(HUD_X, 4, LIST_W, shown + 2);
+		if(sel < first) first = sel;
+		if(sel >= first + LIST_ROWS) first = sel - LIST_ROWS + 1;
+		int shown = count - first < LIST_ROWS ? count - first : LIST_ROWS;
+		for(int i = 0; i < shown; i++) {
+			int kind = kinds[first + i];
+			text_fill(HUD_X + 1, i + 5, LIST_W - 2, TEXT_HUD);
+			if(first + i == sel) text_tile(HUD_X + 1, i + 5, TEXT_HUD | HUD_CURSOR);
+			text_put(HUD_X + 2, i + 5, kind ? rogue_monster_name(kind) : "Player",
+			         LIST_W - 3, TEXT_HUD, 1);
+		}
+		text_box_outline(HUD_X, 4, LIST_W, shown + 2);
+		if(preview_kind) {
 			char tally[20];
 			*put_number(tally, "Defeated  ", defeated_count[preview_kind - 1]) = 0;
 			box_line(21, 22, 18, tally, -1);
 			text_box_outline(21, 21, 18, 3);
-			box_line(HUD_X, 25, HUD_W, "Up/Down Browse  Left/Right Turn", -1);
-			box_footer(HUD_X, 26, HUD_W, "A  Attack    B  Back");
-		} else {
-			box_line(HUD_X, 5, HUD_W, "No creatures defeated yet.", -1);
-			text_box_outline(HUD_X, 4, HUD_W, 3);
-			box_footer(HUD_X, 25, HUD_W, "B  Back");
 		}
-		text_box_outline(HUD_X, 24, HUD_W, count ? 4 : 3);
+		box_line(HUD_X, 25, HUD_W, "D-Pad Browse/Turn  Start Replay", -1);
+		box_line(21, 20, 18, preview_finish < 0 ? "Death previews" : bestiary_finishes()[preview_finish].name, -1);
+		box_footer(HUD_X, 26, HUD_W, "A Attack  C Next death  B Back");
+		text_box_outline(HUD_X, 24, HUD_W, 4);
 		text_commit();
 		preview_dirty = 1;
 		for(;;) {
@@ -753,15 +786,29 @@ static void show_bestiary(void) {
 				game_bestiary_end();
 				return;
 			}
-			if(!count) continue;
-			if(in.pressed & SEGA_CTRL_A) preview_attack = MARS_SYS_COMM12;
+			if(in.pressed & SEGA_CTRL_A) {
+				preview_death = 0;
+				preview_attack = MARS_SYS_COMM12;
+			}
+			if(in.pressed & (SEGA_CTRL_C | SEGA_CTRL_START)) {
+				if(in.pressed & SEGA_CTRL_C) {
+					int total = preview_kind ? sizeof finishes / sizeof finishes[0] :
+					                              sizeof player_deaths / sizeof player_deaths[0];
+					preview_finish = (preview_finish + 1) % total;
+				} else if(preview_finish < 0) preview_finish = 0;
+				preview_attack = 0;
+				preview_death_yaw = preview_yaw;
+				preview_death = MARS_SYS_COMM12;
+				break;
+			}
 			if(in.dir & SEGA_CTRL_LEFT) { preview_yaw -= 0x1400; preview_dirty = 1; }
 			if(in.dir & SEGA_CTRL_RIGHT) { preview_yaw += 0x1400; preview_dirty = 1; }
 			int step = (in.dir & SEGA_CTRL_UP) ? -1 : (in.dir & SEGA_CTRL_DOWN) ? 1 : 0;
 			if(step && count > 1) {
 				sel = (sel + count + step) % count;
 				preview_kind = kinds[sel];
-				preview_attack = 0;
+				preview_finish = -1;
+				preview_attack = preview_death = 0;
 				break;
 			}
 		}
@@ -1079,9 +1126,9 @@ static int page_lines, page_cols;
 
 static int dying, death_acknowledged;
 
-void plat_death(void) {
+void plat_death(death_blow_t blow) {
 	dying = 1;
-	game_death();
+	game_death(blow);
 }
 
 static void show_headstone(const unsigned char *cells) {

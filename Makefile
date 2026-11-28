@@ -60,7 +60,7 @@ SHOBJS  = $(SHSS:.s=.o) $(SHCS:.c=.o)
 RGCS    = $(wildcard rogue/*.c)
 PTCS    = $(wildcard port/*.c)
 SHOBJS += $(RGCS:.c=.o) $(PTCS:.c=.o)
-RGFLAGS = -m2 -mb -O2 -fomit-frame-pointer -ffreestanding -Iport/include -Irogue -Iport
+RGFLAGS = -DVOXELIKE32X -m2 -mb -O2 -fomit-frame-pointer -ffreestanding -Iport/include -Irogue -Iport
 
 # Kinds of build. The stamps make switching between them recompile what
 # differs.

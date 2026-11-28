@@ -98,6 +98,8 @@ static struct { uint8_t cx, cy; } bumped[MAX_BUMPS];
 static int n_bumped;
 static int runs_ready, bestiary_active;
 static int arrival_altitude;
+static int death_pose_age = -1, death_pose_enemy;
+static death_blow_t death_pose_blow;
 static uint8_t model_flat[VOX_MODELS_MAX];
 
 
@@ -326,17 +328,103 @@ const vcol_t (*persp_creature_model(const vox_creature_t *c))[CELL] {
     return c->kind ? ent_solid[c->kind] : hero_dressed(c->attack);
 }
 
-void persp_hero_shatter(void) {
-    vox_hero_shatter(hero_dressed(0));
+static int has_body_voxel(const vcol_t *column, int z) {
+    return z >= 0 && z < column->h && column->c[z] && column->c[z] != VOX_AIR_GAP;
+}
+
+static int has_skeleton(int kind) {
+    switch (kind) {
+        case 0:
+        case 'H' - 'A' + 1: /* hobgoblin */
+        case 'L' - 'A' + 1: /* leprechaun */
+        case 'M' - 'A' + 1: /* medusa */
+        case 'N' - 'A' + 1: /* nymph */
+        case 'O' - 'A' + 1: /* orc */
+        case 'T' - 'A' + 1: /* troll */
+        case 'V' - 'A' + 1: /* vampire */
+        case 'Y' - 'A' + 1: /* yeti */
+        case 'Z' - 'A' + 1: /* zombie */
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/* The skeleton is inside the dressed mesh. Sample it only at the new
+ * faces of a cut, and keep the original material around the cut's rim. */
+static const vcol_t (*death_model(int kind, int face, death_blow_t blow, int age))[CELL] {
+    const vcol_t (*body)[CELL] = kind ? ent_solid[kind] : hero_dressed(0);
+    if (age < 7 || (blow.style != DEATH_CUT && blow.style != DEATH_SLICES) ||
+        !has_skeleton(kind)) return body;
+
+    static vcol_t exposed[CELL][CELL];
+    const vcol_t (*bones)[CELL] = gear_solid[GEAR_HERO_SKELETON];
+    int body_height = vox_body_height(body);
+    int bone_height = vox_body_height(bones);
+    int cut = (body_height + 2) / 3;
+    int cut_x = (blow.dx != 0) ^ (face & 1);
+    memcpy(exposed, body, sizeof exposed);
+    for (int x = 1; x < CELL - 1; x++) {
+        for (int y = 1; y < CELL - 1; y++) {
+            const vcol_t *shell = &body[x][y], *bone = &bones[x][y];
+            vcol_t *column = &exposed[x][y];
+            for (int z = 0; z < shell->h; z++) {
+                if (!has_body_voxel(shell, z)) continue;
+
+                int across = z;
+                const vcol_t *other_bone = bone;
+                if (blow.style == DEATH_CUT) {
+                    int axis = cut_x ? x : y;
+                    if (axis != CELL / 2 - 1 && axis != CELL / 2) continue;
+                    int side = axis == CELL / 2 ? -1 : 1;
+                    int dx = cut_x ? side : 0, dy = cut_x ? 0 : side;
+                    if (!has_body_voxel(&body[x + dx][y + dy], z) ||
+                        !has_body_voxel(&body[x - dy][y - dx], z) ||
+                        !has_body_voxel(&body[x + dy][y + dx], z) ||
+                        !has_body_voxel(shell, z - 1) || !has_body_voxel(shell, z + 1)) continue;
+                    other_bone = &bones[x + dx][y + dy];
+                } else {
+                    if (z == cut - 1 || z == 2 * cut - 1) across = z + 1;
+                    else if (z == cut || z == 2 * cut) across = z - 1;
+                    else continue;
+                    if (!has_body_voxel(shell, across) ||
+                        !has_body_voxel(&body[x - 1][y], z) ||
+                        !has_body_voxel(&body[x + 1][y], z) ||
+                        !has_body_voxel(&body[x][y - 1], z) ||
+                        !has_body_voxel(&body[x][y + 1], z)) continue;
+                }
+                int bone_z = kind ? z * bone_height / body_height : z;
+                int other_z = kind ? across * bone_height / body_height : across;
+                unsigned material = has_body_voxel(bone, bone_z) ? bone->c[bone_z] :
+                                    has_body_voxel(other_bone, other_z) ? other_bone->c[other_z] :
+                                    vox_blood_material;
+                column->c[z] = (uint8_t)material;
+            }
+        }
+    }
+    return (const vcol_t (*)[CELL])exposed;
+}
+
+void persp_release_defeat(death_blow_t blow) {
+    const vcol_t (*model)[CELL] = 0;
+    if (vox_enemy_pose_ticks(blow.style) && blow.style != DEATH_CRUSH) {
+        vox_creature_t c;
+        for (int i = 0; vox_creature(i, &c); i++) {
+            if (c.defeated) {
+                model = death_model(c.kind, c.face, blow, DEATH_SPLIT_TICKS);
+                break;
+            }
+        }
+    }
+    vox_release_defeat(model, blow);
+}
+
+void persp_hero_shatter(death_blow_t blow) {
+    vox_hero_shatter(death_model(0, vox_hero_face, blow, DEATH_SPLIT_TICKS), blow);
 }
 
 int persp_hero_height(void) {
-    const vcol_t (*model)[CELL] = hero_dressed(0);
-    int height = 0;
-    for (int x = 0; x < CELL; x++)
-        for (int y = 0; y < CELL; y++)
-            if (model[x][y].h > height) height = model[x][y].h;
-    return height;
+    return vox_body_height(hero_dressed(0));
 }
 
 /* Store the terrain height and the creature's foot layer in one byte.
@@ -381,6 +469,7 @@ static void place_creatures(int hero_buried, int stair, int offset, int hop) {
     if (test_hide_actors) return;
 #endif
     for (int i = 0; vox_creature(i, &c); i++) {
+        if (death_pose_age >= 0 && death_pose_enemy && c.defeated) continue;
         if (stair && !c.kind) {
             c.x += offset;
             c.z = hop;
@@ -443,6 +532,20 @@ void persp_stair_hop(int sink, int offset, int hop) {
 void persp_arrival_hero(int altitude) {
     arrival_altitude = altitude > 0 ? altitude : 0;
     persp_creatures(altitude ? persp_hero_height() : 0);
+}
+
+void persp_death_pose(death_blow_t blow, int age, int enemy) {
+    death_pose_enemy = enemy;
+    death_pose_blow = blow;
+    death_pose_age = age;
+}
+
+void persp_pool_bubble(int cx, int cy, int height) {
+    vmodel_t *model = bump_for(cx, cy);
+    if (!model) return;
+    vcol_t *column = &model->col[CELL / 2][CELL / 2];
+    if (!column->h || column->h > 3) return;
+    while (height-- > 0) column->c[column->h++] = vox_blood_material;
 }
 
 void persp_death_pool(int cx, int cy, unsigned age) {
@@ -996,54 +1099,105 @@ static void pieces(void) {
     }
 }
 
-/* During the drop, project the dressed model over the room. The ordinary
- * heightfield cannot leave air between a model and its floor. */
-static void arrival_hero(void) {
-    vox_creature_t hero;
-    for (int i = 0; ; i++) {
-        if (!vox_creature(i, &hero)) return;
-        if (!hero.kind) break;
+/* Briefly replay the fatal arrow in the defeat camera. Progress is Q8. */
+void persp_defeat_arrow(int hx, int hy, int ex, int ey, int progress) {
+    int dx = ex - hx, dy = ey - hy;
+    int length = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
+    if (!length) return;
+    int from_z = bestiary_active ? 7 : vox_height_at(hx / CELL, hy / CELL) + 6;
+    int to_z = bestiary_active ? 7 : vox_height_at(ex / CELL, ey / CELL) + 6;
+    int fine_x = job.cols > VIEW_W, fine_y = job.rows > VIEW_H;
+    for (int i = 3; i >= 0; i--) {
+        int along = progress - i * 256 / length;
+        if (along < 0) continue;
+        int32_t rx = hx * 65536 + dx * along * 256 - job.ex;
+        int32_t ry = hy * 65536 + dy * along * 256 - job.ey;
+        int32_t depth = sh2z_mul(rx, job.c) + sh2z_mul(ry, job.s);
+        int32_t side = sh2z_mul(ry, job.c) - sh2z_mul(rx, job.s);
+        if (depth < job.t_near || depth > job.t_far) continue;
+        int scale = (int)(inv_t[(depth - job.t_near) >> INV_STEP] >> 4);
+        int col = job.cols / 2 + (((side >> 8) * scale) >> (20 - fine_x));
+        int z = from_z + ((to_z - from_z) * along >> 8);
+        int row = (job.horizon << fine_y) + (((job.eye_h - z) * scale) >> (12 - fine_y));
+        if ((unsigned)col >= (unsigned)job.cols || (unsigned)row >= (unsigned)job.rows) continue;
+        uint8_t *pixel = (uint8_t *)(job.fb + FB_PIXELS) + row * STRIDE;
+        unsigned color = vox_stone_material + (i ? 5 : 7);
+        ((pair_t *)pixel)[fine_x ? col / 2 : col] = vox_wtab[color];
     }
-    const vcol_t (*model)[CELL] = hero_dressed(0);
-    int ground = vox_height_at(vox_hero_cx, vox_hero_cy);
+}
+
+/* Project the dressed model over the room during the entrance or a
+ * staged death, when its sections can move independently of the floor. */
+static void draw_actor_pose(const vox_creature_t *actor, const vcol_t model[CELL][CELL],
+                            int ground, int altitude, death_blow_t blow, int age) {
     int fine_x = job.cols > VIEW_W, fine_y = job.rows > VIEW_H;
     uint8_t *pixels = (uint8_t *)(job.fb + FB_PIXELS);
-    for (int ix = 0; ix < CELL; ix++) {
-        int x = job.c >= 0 ? CELL - 1 - ix : ix;
-        for (int iy = 0; iy < CELL; iy++) {
-            int y = job.s >= 0 ? CELL - 1 - iy : iy;
-            const vcol_t *col = vox_model_column(model, hero.face, x, y);
-            if (!col->h) continue;
-            int32_t rx = ((hero.x + x) << 16) + 0x8000 - job.ex;
-            int32_t ry = ((hero.y + y) << 16) + 0x8000 - job.ey;
-            int32_t t = sh2z_mul(rx, job.c) + sh2z_mul(ry, job.s);
-            int32_t u = sh2z_mul(ry, job.c) - sh2z_mul(rx, job.s);
-            if (t < job.t_near || t > job.t_far) continue;
-            int scale = (int)(inv_t[(t - job.t_near) >> INV_STEP] >> 4);
-            int width = ((scale << fine_x) + 4095) >> 12;
-            int rows = ((scale << fine_y) + 4095) >> 12;
-            int left = job.cols / 2 + (((u >> 8) * scale) >> (20 - fine_x)) - width / 2;
-            int right = left + width;
-            if (left < 0) left = 0;
-            if (right > job.cols) right = job.cols;
-            for (int z = 0; z < col->h; z++) {
-                int altitude = ground + arrival_altitude + z + 1;
-                int top = (job.horizon << fine_y) +
-                          (((job.eye_h - altitude) * scale) >> (12 - fine_y));
-                int bottom = top + rows;
-                if (top < 0) top = 0;
-                if (bottom > job.rows) bottom = job.rows;
-                for (int row = top; row < bottom; row++) {
-                    uint8_t colour = col->c[z] + (row == top ? 7 : 5);
-                    uint8_t *at = pixels + row * STRIDE;
-                    for (int sx = left; sx < right; sx++) {
-                        if (fine_x) at[sx] = colour;
-                        else ((pair_t *)at)[sx] = vox_wtab[colour];
+    int staged = age >= 0;
+    int sliced = staged && blow.style == DEATH_SLICES;
+    int cut = sliced ? (vox_body_height(model) + 2) / 3 : 0;
+    /* Slabs slide apart along one axis. Paint the one farthest along
+     * the viewing direction first, followed by the base and near slab. */
+    int reverse = blow.dx * job.c + blow.dy * job.s < 0;
+    for (int pass = 0; pass < (sliced ? 3 : 1); pass++) {
+        int slab = pass == 1 ? 0 : ((pass == 0) == reverse ? 1 : 2);
+        int lo = slab * cut;
+        int hi = sliced && slab < 2 ? lo + cut : COL_MAXH;
+        for (int ix = 0; ix < CELL; ix++) {
+            int x = job.c >= 0 ? CELL - 1 - ix : ix;
+            for (int iy = 0; iy < CELL; iy++) {
+                int y = job.s >= 0 ? CELL - 1 - iy : iy;
+                const vcol_t *col = vox_model_column(model, actor->face, x, y);
+                if (col->h <= lo) continue;
+                int px = x, py = y, pz = lo + altitude;
+                if (staged) vox_death_pose(blow, age, cut, &px, &py, &pz);
+                int32_t rx = ((actor->x + px) * 65536) + 0x8000 - job.ex;
+                int32_t ry = ((actor->y + py) * 65536) + 0x8000 - job.ey;
+                int32_t t = sh2z_mul(rx, job.c) + sh2z_mul(ry, job.s);
+                int32_t u = sh2z_mul(ry, job.c) - sh2z_mul(rx, job.s);
+                if (t < job.t_near || t > job.t_far) continue;
+                int scale = (int)(inv_t[(t - job.t_near) >> INV_STEP] >> 4);
+                int width = ((scale << fine_x) + 4095) >> 12;
+                int rows = ((scale << fine_y) + 4095) >> 12;
+                int left = job.cols / 2 + (((u >> 8) * scale) >> (20 - fine_x)) - width / 2;
+                int right = left + width;
+                if (left < 0) left = 0;
+                if (right > job.cols) right = job.cols;
+                for (int z = lo; z < col->h && z < hi; z++) {
+                    if (!col->c[z] || col->c[z] == VOX_AIR_GAP) continue;
+                    int altitude = ground + pz + z - lo + 1;
+                    if (altitude <= ground) continue;
+                    int top = (job.horizon << fine_y) +
+                              (((job.eye_h - altitude) * scale) >> (12 - fine_y));
+                    int bottom = top + rows;
+                    if (top < 0) top = 0;
+                    if (bottom > job.rows) bottom = job.rows;
+                    for (int row = top; row < bottom; row++) {
+                        uint8_t colour = col->c[z] + (row == top ? 7 : 5);
+                        uint8_t *at = pixels + row * STRIDE;
+                        for (int sx = left; sx < right; sx++) {
+                            if (fine_x) at[sx] = colour;
+                            else ((pair_t *)at)[sx] = vox_wtab[colour];
+                        }
                     }
                 }
             }
         }
     }
+}
+
+static void draw_staged_actor(void) {
+    vox_creature_t actor;
+    int enemy = death_pose_age >= 0 && death_pose_enemy;
+    for (int i = 0; ; i++) {
+        if (!vox_creature(i, &actor)) return;
+        if (enemy ? actor.defeated : !actor.kind) break;
+    }
+    const vcol_t (*model)[CELL] = death_model(actor.kind, actor.face, death_pose_blow, death_pose_age);
+    int cx = enemy ? (actor.x + CELL / 2) / CELL : vox_hero_cx;
+    int cy = enemy ? (actor.y + CELL / 2) / CELL : vox_hero_cy;
+    int ground = vox_height_at(cx, cy);
+    draw_actor_pose(&actor, model, ground, arrival_altitude + (enemy ? actor.z : 0),
+                    death_pose_blow, death_pose_age);
 }
 
 /* Set the lens: flat is 0 for full perspective to 256 for none, pull 0
@@ -1203,7 +1357,7 @@ static void render_view(uint16_t *fb, int32_t x, int32_t y, sh2z_fx_t s, sh2z_fx
 #ifdef POLY
     /* The hero's lit room is drawn as polygons. Everything else, and a
      * room too large for them, is left to the rays. */
-    if ((lit_room || (hall && HALL_POLY)) && !bestiary_active && !arrival_altitude && poly_frame()) return;
+    if ((lit_room || (hall && HALL_POLY)) && !bestiary_active && !arrival_altitude && death_pose_age < 0 && poly_frame()) return;
 #else
     (void)lit_room;
     (void)hall;
@@ -1216,7 +1370,7 @@ static void render_view(uint16_t *fb, int32_t x, int32_t y, sh2z_fx_t s, sh2z_fx
     if (test_hide_actors) show_pieces = 0;
 #endif
     if (show_pieces) pieces();
-    if (arrival_altitude) arrival_hero();
+    if (arrival_altitude || death_pose_age >= 0) draw_staged_actor();
 
     /* Two line offsets per aligned longword. The 112-row modes map
      * consecutive scanlines to the same source row. */
@@ -1243,7 +1397,8 @@ void persp_render_gameplay(uint16_t *fb, int x, int y, uint16_t yaw, int pull, i
     render_view(fb, x << 16, y << 16, s, c, pull, flat, res, 1);
 }
 
-void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge) {
+void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge,
+                    death_blow_t blow, int age) {
     enum { CX = MAP_W / 2, CY = MAP_H / 2 };
     if (!bestiary_active) {
         bestiary_active = 1;
@@ -1266,28 +1421,42 @@ void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge) {
         }
     }
     memset(bump, 0, 2 * sizeof bump[0]);
+    int bloody = kind || blow.style <= DEATH_PIERCE || blow.style == DEATH_SLICES;
+    unsigned attack = lunge > 0 ? (lunge == 1 ? 12 : lunge == 3 ? 8 : 4) : 0;
+    const vcol_t (*idle_model)[CELL] = kind ? ent_solid[kind] : hero_dressed(attack);
     for (int x = 0; x < CELL; x++) {
         for (int y = 0; y < CELL; y++) {
             vcol_t *base = &bump[0].col[x][y];
             int corner = (x == 0 || x == CELL - 1) && (y == 0 || y == CELL - 1);
             if (!corner) {
                 base->h = 1;
-                base->c[0] = vox_stone_material;
+                int dx = x - CELL / 2, dy = y - CELL / 2;
+                base->c[0] = bloody && age >= 0 && dx * dx + dy * dy <= 1 + age / 4
+                           && dx * dx + dy * dy <= 9 ? vox_blood_material : vox_stone_material;
             }
         }
     }
-    for (int x = 0; x < CELL; x++) {
-        for (int y = 0; y < CELL; y++) {
-            const vcol_t *src = &ent_solid[kind][x][y];
-            if (!src->h) continue;
-            int forward = y + lunge;
-            vcol_t *dst = &bump[forward / CELL].col[x][forward % CELL];
-            if (forward >= CELL) {
-                dst->c[0] = vox_shadow_material;
-                dst->h = 1;
+    int face = !kind && age >= -10 && !blow.dx ? 1 : 0;
+    int release = kind ? vox_enemy_pose_ticks(blow.style) : vox_hero_death_ticks(blow.style);
+    if (age >= release - 9 && age < release && blow.style == DEATH_CRUSH) {
+        vcol_t *bubble = &bump[0].col[CELL / 2][CELL / 2];
+        int height = age < release - 5 ? 1 : 2;
+        while (height-- > 0) bubble->c[bubble->h++] = vox_blood_material;
+    }
+    if (age < 0) {
+        for (int x = 0; x < CELL; x++) {
+            for (int y = 0; y < CELL; y++) {
+                const vcol_t *src = vox_model_column(idle_model, face, x, y);
+                if (!src->h) continue;
+                int forward = y + lunge;
+                vcol_t *dst = &bump[forward / CELL].col[x][forward % CELL];
+                if (forward >= CELL) {
+                    dst->c[0] = vox_shadow_material;
+                    dst->h = 1;
+                }
+                for (int z = 0; z < src->h && dst->h < COL_MAXH; z++)
+                    dst->c[dst->h++] = src->c[z];
             }
-            for (int z = 0; z < src->h && dst->h < COL_MAXH; z++)
-                dst->c[dst->h++] = src->c[z];
         }
     }
     sh2z_fx_t s, c;
@@ -1296,7 +1465,20 @@ void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge) {
      * fractional voxel so its screen position stays fixed as we orbit. */
     render_view(fb, ((CX * CELL + CELL / 2) << 16) + s * 12,
                 ((CY * CELL + CELL / 2) << 16) - c * 12,
-                s, c, -265, 0, PERSP_RES_FINE, 0);
+                s, c, kind && blow.style != DEATH_SLICES ? -265 : -240, 0, PERSP_RES_FINE, 0);
+    int x = CX * CELL, y = CY * CELL;
+    const vcol_t (*model)[CELL] = death_model(kind, face, blow, age);
+    if (age >= 0 && age < release) {
+        vox_creature_t actor = { .x = x, .y = y, .kind = kind, .face = face };
+        draw_actor_pose(&actor, model, 1, 0, blow, age);
+    }
+    if (age >= -8 && age < 0 &&
+        (blow.style == DEATH_ARROW_SHOT || blow.style == DEATH_ARROW))
+        persp_defeat_arrow(x + CELL / 2 - blow.dx * 9, y + CELL / 2 - blow.dy * 9,
+                           x + CELL / 2, y + CELL / 2, (age + 9) * 32);
+    vox_preview_begin(kind, face, x, y, blow, model, age);
+    if (age >= 0) pieces();
+    vox_preview_end();
 }
 
 void persp_bestiary_end(void) {

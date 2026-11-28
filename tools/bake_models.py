@@ -125,7 +125,7 @@ def bake(creature, keys):
     return sprite
 
 
-def solid(creature, keys, shadow):
+def solid(creature, keys, shadow, hollow=False):
     """Return cols[x][y]: the materials of a column, bottom first."""
     layers = creature["layers"]
     rows = len(layers[0]) == CELL         # drawn from above, a voxel at a time
@@ -152,7 +152,7 @@ def solid(creature, keys, shadow):
                 for y in range(CELL):
                     if layer[y][x] != ".":
                         col = cols[x][y]
-                        col += [filler(x, k) for k in range(len(col), z)]
+                        col += [0 if hollow else filler(x, k) for k in range(len(col), z)]
                         col.append(keys[layer[y][x]])
             continue
         front = layer[0]
@@ -168,7 +168,7 @@ def solid(creature, keys, shadow):
             for y in range(CELL):
                 if layer_voxel(layer, x, y):
                     col = cols[x][y]
-                    col += [filler(x, k) for k in range(len(col), z)]
+                    col += [0 if hollow else filler(x, k) for k in range(len(col), z)]
                     behind = keys[back[x]] if back and back[x] != "." else plain
                     col.append(keys[front[x]] if y >= CELL // 2 else behind)
     return cols
@@ -324,7 +324,8 @@ def main():
         shadow = next(i for i, m in enumerate(mats, 1) if m[0] == "SHADOW")
         gear = read_creatures(os.path.join(ROOT, "models/gear.txt"), keys)
         write_solid(args.solid, order, {ch: solid(creatures[ch], keys, shadow) for ch in wanted},
-                    [(g["name"], solid(g, keys, shadow)) for g in gear.values()])
+                    [(g["name"], solid(g, keys, shadow, hollow=g["name"] == "hero_skeleton"))
+                     for g in gear.values()])
     if args.preview:
         write_preview(args.preview, mats, order, sprites)
 
