@@ -12,11 +12,9 @@ can be checked without building a ROM.
 
 A camera that does turn (sh_src/persp.c) needs the creature itself. --solid
 writes each one as 8x8 columns of voxels, the same shape as a terrain model,
-so the renderer can stand it on a cell. Columns are solid from the ground
-up: where the side view is cut away under something solid the layer is
-filled out to it, a gap the front view shows (between legs, under a belly)
-is filled with shadow, and a creature drawn hovering is set down on the
-floor.
+so the renderer can stand it on a cell. Empty voxels stay empty even under
+a solid one. Legacy silhouette creatures with wholly blank bottom layers
+are still grounded; explicit layers and held gear keep their drawn height.
 """
 import argparse, os, struct, sys, zlib
 
@@ -56,12 +54,13 @@ def read_creatures(path, keys):
             cur = creatures[ch] = {"name": name, "layers": []}
             continue
         parts = line.split()
-        if cur is None or len(parts) not in (2, 3, 4) or any(len(p) != CELL for p in parts):
-            die(f"{path}:{n}: want 8 front, 8 side, optionally 8 back and 8 trim characters")
-        for c in parts[0] + "".join(parts[2:3]):
+        if cur is None or len(parts) not in (2, 3, 4, CELL) or any(len(p) != CELL for p in parts):
+            die(f"{path}:{n}: want 8 front, 8 side, optionally 8 back and 8 trim characters, or the layer's 8 rows of 8")
+        # Eight groups are the layer itself, seen from above: see layer_key.
+        for c in "".join(parts) if len(parts) == CELL else parts[0] + "".join(parts[2:3]):
             if c != "." and c not in keys:
                 die(f"{path}:{n}: no material has key '{c}'")
-        if parts[1].strip(".#"):
+        if len(parts) != CELL and parts[1].strip(".#"):
             die(f"{path}:{n}: side may only hold . and #")
         if len(parts) == 4 and parts[3].strip("0123"):
             die(f"{path}:{n}: corner trim must use digits 0–3")
@@ -69,6 +68,8 @@ def read_creatures(path, keys):
     for ch, c in creatures.items():
         if not 0 < len(c["layers"]) <= MAX_LAYERS:
             die(f"{path}: '{ch}' has {len(c['layers'])} layers, limit is {MAX_LAYERS}")
+        if len({len(layer) == CELL for layer in c["layers"]}) > 1:
+            die(f"{path}: '{ch}' has layers drawn both ways: all as views, or all as rows from above")
     return creatures
 
 
@@ -84,6 +85,19 @@ def layer_voxel(layer, x, y):
     return True
 
 
+def layer_key(layer, x, y):
+    """The key of the material at a place in a layer, or None for nothing.
+
+    A layer is drawn one of two ways. As two to four groups it is views, a
+    front and a side that carve it between them, and every voxel is the
+    front's colour. As eight groups it is the layer itself seen from above,
+    each group a row from the creature's right to its left, the back row
+    first: any shape, a voxel at a time. tools/voxedit.py writes these."""
+    if len(layer) == CELL:
+        return layer[y][x] if layer[y][x] != "." else None
+    return layer[0][x] if layer_voxel(layer, x, y) else None
+
+
 def bake(creature, keys):
     """Return sprite[lx][row]: 0 empty, else material * 8, +1 on a top face."""
     layers = creature["layers"]
@@ -92,8 +106,8 @@ def bake(creature, keys):
     def voxel(x, y, z):
         if not 0 <= z < height:
             return 0
-        layer = layers[height - 1 - z]
-        return keys[layer[0][x]] if layer_voxel(layer, x, y) else 0
+        key = layer_key(layers[height - 1 - z], x, y)
+        return keys[key] if key else 0
 
     sprite = [[0] * ROWS for _ in range(CELL)]
     for x in range(CELL):
@@ -109,34 +123,39 @@ def bake(creature, keys):
     return sprite
 
 
-def solid(creature, keys, shadow):
+def solid(creature, keys, keep_height=False):
     """Return cols[x][y]: the materials of a column, bottom first."""
     layers = creature["layers"]
-    while layers and not layers[-1][0].strip("."):
+    rows = len(layers[0]) == CELL         # drawn from above, a voxel at a time
+    while not rows and not keep_height and layers and not layers[-1][0].strip("."):
         layers = layers[:-1]              # hovering: set it down
     height = len(layers)
     cols = [[[] for _ in range(CELL)] for _ in range(CELL)]
 
-    def filler(x, z):
-        """What stands in for a missing voxel under a solid one: the layer's
-        own material if the creature is that wide there, otherwise shadow."""
-        front = layers[height - 1 - z][0]
-        return keys[front[x]] if front[x] != "." else shadow
-
     for z in range(height):
         layer = layers[height - 1 - z]
+        if rows:
+            for x in range(CELL):
+                for y in range(CELL):
+                    if layer[y][x] != ".":
+                        col = cols[x][y]
+                        col += [0] * (z - len(col))
+                        col.append(keys[layer[y][x]])
+            continue
         front = layer[0]
         # The back half of a layer is coloured from the back view, which is
         # drawn as seen from behind and so runs the other way. Without one
         # there is no face to show: it takes the layer's commonest material.
         back = layer[2][::-1] if len(layer) >= 3 else None
         used = [c for c in front if c != "."]
-        plain = keys[max(set(used), key=used.count)] if used else 0
+        # Of two as common as each other, the one nearer the left: a set
+        # would give a different one from one run to the next.
+        plain = keys[max(used, key=used.count)] if used else 0
         for x in range(CELL):
             for y in range(CELL):
                 if layer_voxel(layer, x, y):
                     col = cols[x][y]
-                    col += [filler(x, k) for k in range(len(col), z)]
+                    col += [0] * (z - len(col))
                     behind = keys[back[x]] if back and back[x] != "." else plain
                     col.append(keys[front[x]] if y >= CELL // 2 else behind)
     return cols
@@ -289,12 +308,13 @@ def main():
         textures = read_terrain(os.path.join(ROOT, "models/terrain.txt"), keys)
         write_header(args.header, mats, order, sprites, textures)
     if args.solid:
-        shadow = next(i for i, m in enumerate(mats, 1) if m[0] == "SHADOW")
         gear = read_creatures(os.path.join(ROOT, "models/gear.txt"), keys)
-        write_solid(args.solid, order, {ch: solid(creatures[ch], keys, shadow) for ch in wanted},
-                    [(g["name"], solid(g, keys, shadow)) for g in gear.values()])
+        write_solid(args.solid, order, {ch: solid(creatures[ch], keys) for ch in wanted},
+                    [(g["name"], solid(g, keys, keep_height=not g["name"].startswith("body_")))
+                     for g in gear.values()])
     if args.preview:
         write_preview(args.preview, mats, order, sprites)
 
 
-main()
+if __name__ == "__main__":
+    main()

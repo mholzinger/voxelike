@@ -15,6 +15,9 @@
 #include <string.h>
 #include <ctype.h>
 #include "rogue.h"
+#ifdef VOXELIKE32X
+extern void rogue_fatal_bolt(const char *, int, int);
+#endif
 
 /*
  * fix_stick:
@@ -390,6 +393,9 @@ def:
 		    {
 			if ((pstats.s_hpt -= roll(6, 6)) <= 0)
 			{
+#ifdef VOXELIKE32X
+			    rogue_fatal_bolt(name, dir->x, dir->y);
+#endif
 			    if (start == &hero)
 				death('b');
 			    else

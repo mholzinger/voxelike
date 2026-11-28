@@ -530,42 +530,67 @@ static void update_duel(int steps, int suppressed) {
 /* Use a private camera angle and return to the gameplay view before
  * reading the next command. Rogue has already resolved the killing hit. */
 static void play_defeat(int enemy_x, int enemy_y) {
-	enum { APPROACH = 15, FLASH_AT = 17, IMPACT = 27, RETREAT = 46, END = 62 };
+	enum { APPROACH = 15, FLASH_AT = 17, IMPACT = 27 };
+	death_blow_t blow = { vox_defeat_style(), 0, 0 };
+	int split = blow.style == DEATH_CUT || blow.style == DEATH_SLICES;
+	int sink = blow.style == DEATH_CRUSH;
+	int pose_ticks = vox_enemy_pose_ticks(blow.style);
+	int release_at = IMPACT + pose_ticks;
+	int retreat_at = release_at + (pose_ticks ? 8 : 19);
+	int end = retreat_at + 16;
+	int cx = enemy_x / CELL, cy = enemy_y / CELL;
 	int hx = vox_hero_x + CELL / 2, hy = vox_hero_y + CELL / 2;
 	int dx = enemy_x - hx, dy = enemy_y - hy;
 	uint16_t from_yaw = game_input_yaw();
 	uint16_t victory_yaw = fight_yaw(enemy_x, enemy_y, dx, dy, BEHIND_HERO, from_yaw, 0x1000);
+	if (split) {
+		blow.dx = ((uint16_t)(victory_yaw + 0x2000) & 0x4000) != 0;
+		blow.dy = !blow.dx;
+	}
 	int swing_in = (int16_t)(victory_yaw - from_yaw);
 	int swing_out = (int16_t)(persp_yaw - victory_yaw);
 	int from_x = hx, from_y = hy;
 	duel_centre(&from_x, &from_y);
 	int from_pull = duel_pull(NORMAL_PULL);
 	int previous = 0;
+	int shot = blow.style == DEATH_ARROW_SHOT || blow.style == DEATH_ARROW;
+	int flash_at = shot ? IMPACT : FLASH_AT;
 	uint32_t start = MARS_SYS_COMM12;
 	update_hero_gear();
 	persp_creatures(0);
 	for(;;) {
-		int t = clamp((int)(MARS_SYS_COMM12 - start), 0, END);
-		if(t >= FLASH_AT && t < IMPACT && previous < FLASH_AT) {
+		int t = clamp((int)(MARS_SYS_COMM12 - start), 0, end);
+		if(t >= flash_at && previous < flash_at) {
 			vox_defeat_flash();
 			persp_creatures(0);
 		}
 		int from = previous < IMPACT - 3 ? IMPACT - 3 : previous;
 		while(from < t) {
-			if(++from == IMPACT) {
-				vox_release_defeat();
+			++from;
+			if(sink && (from == IMPACT || from == IMPACT + 6 || from == IMPACT + 12))
+				vox_events |= VOX_HURT;
+			if(from == release_at) {
+				persp_death_pose(blow, -1, 1);
+				persp_release_defeat(blow);
 				persp_sync(1);
-				sounds();
 			}
+			sounds();
 			vox_animate();
 		}
-		if(t >= IMPACT - 3) persp_creatures(0);
+		if(t >= IMPACT - 3) {
+			int pose = pose_ticks && t >= IMPACT && t < release_at;
+			persp_death_pose(blow, pose ? t - IMPACT : -1, 1);
+			persp_creatures(0);
+			if(pose) persp_death_pool(cx, cy, (unsigned)(t - IMPACT));
+			if(sink && pose && t >= release_at - 9)
+				persp_pool_bubble(cx, cy, t < release_at - 5 ? 1 : 2);
+		}
 		int p = clamp(t, 0, APPROACH) * 256 / APPROACH
-		      - clamp(t - RETREAT, 0, END - RETREAT) * 256 / (END - RETREAT);
+		      - clamp(t - retreat_at, 0, end - retreat_at) * 256 / (end - retreat_at);
 		int eased = ((p * p >> 8) * (768 - 2 * p)) >> 8;
 		int approach = clamp(t, 0, APPROACH) * 256 / APPROACH;
 		int remaining = 256 - ease_mix(approach);
-		int retreat = ease_mix(clamp(t - RETREAT, 0, END - RETREAT) * 256 / (END - RETREAT));
+		int retreat = ease_mix(clamp(t - retreat_at, 0, end - retreat_at) * 256 / (end - retreat_at));
 		uint16_t yaw = (uint16_t)(from_yaw + swing_in * (256 - remaining) / 256 +
 		                          swing_out * retreat / 256);
 		int x = hx + dx * eased / 512 + (from_x - hx) * remaining / 256;
@@ -573,8 +598,10 @@ static void play_defeat(int enemy_x, int enemy_y) {
 		int pull = NORMAL_PULL + (FIGHT_PULL - NORMAL_PULL) * eased / 256 +
 		           (from_pull - NORMAL_PULL) * remaining / 256;
 		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, yaw, pull, 0, cam_res);
+		if(shot && t >= IMPACT - 8 && t < IMPACT)
+			persp_defeat_arrow(hx, hy, enemy_x, enemy_y, (t - IMPACT + 9) * 32);
 		swapBuffers();
-		if(t == END) break;
+		if(t == end) break;
 		previous = t;
 	}
 	anim_tick = MARS_SYS_COMM12;
@@ -791,22 +818,38 @@ void game_frame(void) {
 
 /* Rogue still has its dungeon screen here, including the fatal attacker.
  * Play the scene on the vblank clock without taking any more game turns. */
-void game_death(void) {
-	enum { PUSH = 24, SPATTER = 32, BURST = 45, FADE = 33 };
+void game_death(death_blow_t blow) {
+	enum { PUSH = 24, SPATTER = 32, FADE = 33 };
+	const int burst = SPATTER + vox_hero_death_ticks(blow.style);
 #ifdef PERSP
-	enum { ORBIT_START = 80, ORBIT_TICKS = 180, RETREAT = ORBIT_START + ORBIT_TICKS };
+	int split = blow.style == DEATH_CUT || blow.style == DEATH_SLICES;
+	int sink = blow.style == DEATH_CRUSH;
+	int staged = split || sink;
+	/* Open the cuts across the screen so both sides stay readable. */
+	if (split) {
+		blow.dx = ((uint16_t)(game_input_yaw() + 0x2000) & 0x4000) != 0;
+		blow.dy = !blow.dx;
+	}
+	enum { ORBIT_TICKS = 180 };
+	const int orbit_start = staged ? 100 : 80;
+	const int retreat_at = orbit_start + ORBIT_TICKS;
 	update_hero_gear();
 	int start_pull = duel_pull(gameplay_pull());
 	int start_flat = cam_flat;
 	const int closest = -172;
 	const int orbit_pull = -140;
 #else
-	enum { RETREAT = 72 };
+	const int retreat_at = 72;
 #endif
-	const int end = RETREAT + FADE;
+	const int end = retreat_at + FADE;
 	load_dungeon_screen(0);
 	vox_hero_hit_flash(0);
 #ifdef PERSP
+	if (split) {
+		static const int8_t face_eye[4][2] = { {-1, 0}, {0, -1}, {1, 0}, {0, 1} };
+		unsigned quarter = (uint16_t)(game_input_yaw() + 0x2000) >> 14;
+		vox_hero_turn(face_eye[quarter][0], face_eye[quarter][1]);
+	}
 	persp_creatures(0);
 #endif
 	text_begin();
@@ -830,13 +873,18 @@ void game_death(void) {
 		int previous = advanced;
 #endif
 		while(advanced < t) {
-			if(++advanced == SPATTER - 4) vox_hero_hit_flash(1);
-			if(advanced == SPATTER) vox_hero_spatter();
-			if(advanced == BURST) {
+			if(++advanced == SPATTER - 4 && blow.style != DEATH_COLLAPSE) vox_hero_hit_flash(1);
+			if(advanced == SPATTER) vox_hero_spatter(blow);
 #ifdef PERSP
-				persp_hero_shatter();
+			if(sink && (advanced == SPATTER || advanced == SPATTER + 6 || advanced == SPATTER + 12))
+				vox_events |= VOX_HURT;
+#endif
+			if(advanced == burst) {
+#ifdef PERSP
+				if (sink) vox_hero_pool_pop();
+				else persp_hero_shatter(blow);
 #else
-				vox_hero_shatter(0);
+				vox_hero_shatter(0, blow);
 #endif
 				vox_events |= VOX_BURST;
 			}
@@ -845,23 +893,28 @@ void game_death(void) {
 		if(t >= PUSH - 4) sounds();
 #ifdef PERSP
 		int push = clamp(t, 0, PUSH);
-		int retreat = clamp(t - RETREAT, 0, FADE);
-		int orbit = clamp(t - ORBIT_START, 0, ORBIT_TICKS);
+		int retreat = clamp(t - retreat_at, 0, FADE);
+		int orbit = clamp(t - orbit_start, 0, ORBIT_TICKS);
 		/* At its closest, the hero is about 50 percent larger than in
 		 * the normal gameplay view. */
 		int pull = start_pull + (closest - start_pull) * push / PUSH
-		         + (orbit_pull - closest) * ease_mix(clamp(t - BURST, 0, ORBIT_START - BURST)
-		                                      * 256 / (ORBIT_START - BURST)) / 256
+		         + (orbit_pull - closest) * ease_mix(clamp(t - burst, 0, orbit_start - burst)
+		                                      * 256 / (orbit_start - burst)) / 256
 		         + (256 - orbit_pull) * retreat * retreat / (FADE * FADE);
 		int flat = start_flat * (PUSH - push) / PUSH;
 		int x = hx + ((fx - hx) * flat >> 8) + (from_x - hx) * (PUSH - push) / PUSH;
 		int y = hy + ((fy - hy) * flat >> 8) + (from_y - hy) * (PUSH - push) / PUSH;
 		if(advanced != previous) {
-			persp_creatures(0);
-			if(t >= SPATTER + 6)
+			int pose = staged && t >= SPATTER && t < burst;
+			persp_creatures(pose ? COL_MAXH : 0);
+			persp_death_pose(blow, pose ? t - SPATTER : -1, 0);
+			if((blow.style <= DEATH_PIERCE || blow.style == DEATH_SLICES) && t >= SPATTER + 6)
 				persp_death_pool(hx / CELL, hy / CELL, (unsigned)(t - SPATTER - 6));
+			if(sink && t >= burst - 9 && t < burst)
+				persp_pool_bubble(hx / CELL, hy / CELL, t < burst - 5 ? 1 : 2);
 		}
-		uint16_t yaw = (uint16_t)(game_input_yaw() + orbit * 0x10000 / ORBIT_TICKS);
+		int cut_view = split ? 0x1800 * ease_mix(clamp(t - SPATTER, 0, 20) * 256 / 20) / 256 : 0;
+		uint16_t yaw = (uint16_t)(game_input_yaw() + cut_view + orbit * 0x10000 / ORBIT_TICKS);
 		persp_render((uint16_t *)&MARS_FRAMEBUFFER, x, y, yaw, pull, flat, cam_res);
 #else
 		vox_prepare((uint16_t *)&MARS_FRAMEBUFFER, currentFB, x, y);
@@ -892,12 +945,13 @@ void game_bestiary_wait(void) {
 	wait_vblank();
 }
 
-void game_bestiary_frame(int kind, uint16_t yaw, int lunge) {
+void game_bestiary_frame(int kind, uint16_t yaw, int lunge, death_blow_t blow, int age) {
+	if (!kind) update_hero_gear();
 	if(blanked) {
 		vox_palette(VOX_FULL_LIGHT);
 		blanked = 0;
 	}
-	persp_bestiary((uint16_t *)&MARS_FRAMEBUFFER, kind, yaw, lunge);
+	persp_bestiary((uint16_t *)&MARS_FRAMEBUFFER, kind, yaw, lunge, blow, age);
 	swapBuffers();
 	sfx_flush();
 }

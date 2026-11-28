@@ -8,3 +8,4 @@ sh_src/baked3d.h
 sh_src/baked_terrain.h
 sh_src/version.h
 sh_src/splash_frames.h
+__pycache__/

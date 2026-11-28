@@ -2,6 +2,7 @@
 #define VOXEL_H
 
 #include <stdint.h>
+#include "../port/death_style.h"
 
 /* The dungeon is Rogue's own 80x24 character grid. Each character cell is a
  * CELL x CELL footprint of voxel columns, and the screen is VIEW_W x VIEW_H
@@ -79,7 +80,9 @@ int vox_load_screen(const uint8_t *cells, const vox_source_t *src,
 /* Hold one defeated opponent on screen until the combat camera is ready. */
 int vox_defeat_target(int *x, int *y);
 void vox_defeat_flash(void);
-void vox_release_defeat(void);
+void vox_note_kill(unsigned long id, death_style_t style);
+death_style_t vox_defeat_style(void);
+void vox_release_defeat(const vcol_t model[CELL][CELL], death_blow_t blow);
 
 /* Camera target for an opponent on a neighboring tile. */
 typedef struct {
@@ -104,11 +107,20 @@ void vox_hero_turn(int dx, int dy);
 void vox_hero_hit_flash(int on);
 
 /* Spray red fragments while the hero is still standing. */
-void vox_hero_spatter(void);
+enum { DEATH_SPLIT_TICKS = 30, DEATH_SINK_TICKS = 40 };
+void vox_preview_begin(int kind, int face, int x, int y, death_blow_t blow,
+                       const vcol_t model[CELL][CELL], int age);
+void vox_preview_end(void);
+int vox_enemy_pose_ticks(death_style_t style);
+int vox_hero_death_ticks(death_style_t style);
+int vox_body_height(const vcol_t model[CELL][CELL]);
+void vox_death_pose(death_blow_t blow, int age, int cut, int *x, int *y, int *z);
+void vox_hero_pool_pop(void);
+void vox_hero_spatter(death_blow_t blow);
 
 /* Shed model-coloured chunks. A flat build uses the hero sprite in place
  * of the equipped 3D model. */
-void vox_hero_shatter(const vcol_t model[CELL][CELL]);
+void vox_hero_shatter(const vcol_t model[CELL][CELL], death_blow_t blow);
 
 /* Bring the framebuffer that is about to be shown up to date for a camera
  * position and point its line table there. buf names which of the two

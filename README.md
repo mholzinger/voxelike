@@ -26,6 +26,7 @@ make FULL_VIEW=1       # rays cross the whole map, not only the hero's room
 make RENDER_TEST=7     # a bot plays dungeon 7 and times rooms, passages and fights
 make FOLD_CHECK=1      # count cells the short screen fold-in missed (there should be none)
 make POLY=             # rays draw everything, not polygons (POLY=1: polygons in flat colours; the default is 2, in the rays' bitmaps)
+make edit              # paint the voxel models of models/ in the browser, in 3D, and save them back (tools/voxedit.py)
 make POLYBENCH=1       # rom/polybench.32x: a room of flat polygons, timed (2: on one SH-2; 3: both draw; EYE=128..208; ACTORS=0..8)
 make VERSION=0.1.0-alpha.1   # the name on the title screen; without it, dev- and the commit
 make ARMOR=7 WEAPON=5   # dress the hero for looking at the art (Rogue's numbers)
@@ -360,6 +361,10 @@ animate attacks and defeats.
   to gameplay. A small stain stays on the death tile for the current floor.
 
 ## Player death
+
+The hero has a voxel skeleton under the body and armor. Slicing deaths
+show the bones where the cut passes through them, with the body and
+armor still visible around the exposed faces.
 
 The camera pushes in to make the hero about 50 percent larger. The fatal
 blow sends out a spray of red voxels while the hero is still standing.

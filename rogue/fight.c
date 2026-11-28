@@ -120,7 +120,15 @@ fight(coord *mp, THING *weap, bool thrown)
 	    msg("your hands stop glowing %s", pick_color("red"));
 	}
 	if (tp->t_stats.s_hpt <= 0)
+	{
+#ifdef VOXELIKE32X
+	    int weapon = weap && weap->o_type == WEAPON ? weap->o_which : -1;
+	    int launched = weapon == ARROW && thrown && cur_weapon != NULL &&
+			   cur_weapon->o_which == weap->o_launch && (weap->o_flags & ISMISL);
+	    rogue_note_kill((unsigned long)tp, weapon, launched);
+#endif
 	    killed(tp, TRUE);
+	}
 	else if (did_hit && !on(player, ISBLIND))
 	    msg("%s appears confused", mname);
 	did_hit = TRUE;
