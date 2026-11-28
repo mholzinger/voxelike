@@ -16,6 +16,12 @@
 # half takes the layer's commonest material. An optional fourth group of
 # eight digits trims that many voxels from each end of the front silhouette
 # at each side depth. Use it to bevel the corners of a layer.
+#
+# A layer can instead be eight groups of 8: the layer itself, seen from
+# above, a voxel a character. Each group is a row across the creature, in
+# the columns of the front view, and the back row comes first. Any shape
+# can be drawn this way, and it is how tools/voxedit.py (make edit) writes
+# a model it has changed. A model's layers are all one way or all the other.
 
 = @ hero
 ..hhhh.. ..####.. ..hhhh.. 00000000

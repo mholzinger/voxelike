@@ -56,12 +56,13 @@ def read_creatures(path, keys):
             cur = creatures[ch] = {"name": name, "layers": []}
             continue
         parts = line.split()
-        if cur is None or len(parts) not in (2, 3, 4) or any(len(p) != CELL for p in parts):
-            die(f"{path}:{n}: want 8 front, 8 side, optionally 8 back and 8 trim characters")
-        for c in parts[0] + "".join(parts[2:3]):
+        if cur is None or len(parts) not in (2, 3, 4, CELL) or any(len(p) != CELL for p in parts):
+            die(f"{path}:{n}: want 8 front, 8 side, optionally 8 back and 8 trim characters, or the layer's 8 rows of 8")
+        # Eight groups are the layer itself, seen from above: see layer_key.
+        for c in "".join(parts) if len(parts) == CELL else parts[0] + "".join(parts[2:3]):
             if c != "." and c not in keys:
                 die(f"{path}:{n}: no material has key '{c}'")
-        if parts[1].strip(".#"):
+        if len(parts) != CELL and parts[1].strip(".#"):
             die(f"{path}:{n}: side may only hold . and #")
         if len(parts) == 4 and parts[3].strip("0123"):
             die(f"{path}:{n}: corner trim must use digits 0–3")
@@ -69,6 +70,8 @@ def read_creatures(path, keys):
     for ch, c in creatures.items():
         if not 0 < len(c["layers"]) <= MAX_LAYERS:
             die(f"{path}: '{ch}' has {len(c['layers'])} layers, limit is {MAX_LAYERS}")
+        if len({len(layer) == CELL for layer in c["layers"]}) > 1:
+            die(f"{path}: '{ch}' has layers drawn both ways: all as views, or all as rows from above")
     return creatures
 
 
@@ -84,6 +87,19 @@ def layer_voxel(layer, x, y):
     return True
 
 
+def layer_key(layer, x, y):
+    """The key of the material at a place in a layer, or None for nothing.
+
+    A layer is drawn one of two ways. As two to four groups it is views, a
+    front and a side that carve it between them, and every voxel is the
+    front's colour. As eight groups it is the layer itself seen from above,
+    each group a row from the creature's right to its left, the back row
+    first: any shape, a voxel at a time. tools/voxedit.py writes these."""
+    if len(layer) == CELL:
+        return layer[y][x] if layer[y][x] != "." else None
+    return layer[0][x] if layer_voxel(layer, x, y) else None
+
+
 def bake(creature, keys):
     """Return sprite[lx][row]: 0 empty, else material * 8, +1 on a top face."""
     layers = creature["layers"]
@@ -92,8 +108,8 @@ def bake(creature, keys):
     def voxel(x, y, z):
         if not 0 <= z < height:
             return 0
-        layer = layers[height - 1 - z]
-        return keys[layer[0][x]] if layer_voxel(layer, x, y) else 0
+        key = layer_key(layers[height - 1 - z], x, y)
+        return keys[key] if key else 0
 
     sprite = [[0] * ROWS for _ in range(CELL)]
     for x in range(CELL):
@@ -112,7 +128,8 @@ def bake(creature, keys):
 def solid(creature, keys, shadow):
     """Return cols[x][y]: the materials of a column, bottom first."""
     layers = creature["layers"]
-    while layers and not layers[-1][0].strip("."):
+    rows = len(layers[0]) == CELL         # drawn from above, a voxel at a time
+    while layers and not "".join(layers[-1] if rows else layers[-1][:1]).strip("."):
         layers = layers[:-1]              # hovering: set it down
     height = len(layers)
     cols = [[[] for _ in range(CELL)] for _ in range(CELL)]
@@ -120,11 +137,24 @@ def solid(creature, keys, shadow):
     def filler(x, z):
         """What stands in for a missing voxel under a solid one: the layer's
         own material if the creature is that wide there, otherwise shadow."""
-        front = layers[height - 1 - z][0]
+        layer = layers[height - 1 - z]
+        if rows:
+            # What the front view would show there: the voxel nearest the front.
+            seen = [layer[y][x] for y in range(CELL) if layer[y][x] != "."]
+            return keys[seen[-1]] if seen else shadow
+        front = layer[0]
         return keys[front[x]] if front[x] != "." else shadow
 
     for z in range(height):
         layer = layers[height - 1 - z]
+        if rows:
+            for x in range(CELL):
+                for y in range(CELL):
+                    if layer[y][x] != ".":
+                        col = cols[x][y]
+                        col += [filler(x, k) for k in range(len(col), z)]
+                        col.append(keys[layer[y][x]])
+            continue
         front = layer[0]
         # The back half of a layer is coloured from the back view, which is
         # drawn as seen from behind and so runs the other way. Without one
@@ -299,4 +329,5 @@ def main():
         write_preview(args.preview, mats, order, sprites)
 
 
-main()
+if __name__ == "__main__":
+    main()
