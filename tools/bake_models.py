@@ -131,7 +131,9 @@ def solid(creature, keys, shadow):
         # there is no face to show: it takes the layer's commonest material.
         back = layer[2][::-1] if len(layer) >= 3 else None
         used = [c for c in front if c != "."]
-        plain = keys[max(set(used), key=used.count)] if used else 0
+        # Of two as common as each other, the one nearer the left: a set
+        # would give a different one from one run to the next.
+        plain = keys[max(used, key=used.count)] if used else 0
         for x in range(CELL):
             for y in range(CELL):
                 if layer_voxel(layer, x, y):
