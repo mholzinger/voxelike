@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voxelike models</title>
+<style>
+  :root {
+    --bg: #14151a; --panel: #1c1e26; --line: #2c2f3b; --text: #e6e3d8; --dim: #8d8f9b;
+    --accent: #f0b54a; --cell: 30px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.4 ui-monospace, Menlo, Consolas, monospace;
+         display: grid; grid-template-columns: 200px 1fr 340px; }
+  aside, section { overflow: auto; }
+  button { font: inherit; }
+  #list { background: var(--panel); border-right: 1px solid var(--line); padding: 10px 0; }
+  #list h2, #side h2 { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim);
+                       font-weight: normal; }
+  #list h2 { margin: 14px 14px 4px; }
+  #list button { display: flex; gap: 10px; width: 100%; padding: 4px 14px; border: 0; background: none;
+                 color: inherit; text-align: left; cursor: pointer; }
+  #list button:hover { background: #252834; }
+  #list button[aria-current=true] { background: #2d3040; color: var(--accent); }
+  #list button .id { color: var(--dim); width: 1.2em; }
+  #list button.dirty span:last-child::after { content: " *"; color: var(--accent); }
+  #stage { position: relative; min-width: 0; overflow: hidden; }
+  #view { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  #title { position: absolute; left: 14px; top: 10px; font-size: 18px; pointer-events: none; }
+  #title small { display: block; font-size: 12px; color: var(--dim); }
+  #bar { position: absolute; left: 14px; right: 14px; bottom: 10px; display: flex; gap: 14px; align-items: center;
+         color: var(--dim); flex-wrap: wrap; font-size: 12px; }
+  #bar label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  #say { position: absolute; left: 14px; top: 62px; color: var(--accent); font-size: 12px; white-space: pre-wrap; }
+  #side { background: var(--panel); border-left: 1px solid var(--line); padding: 12px 14px; }
+  #side h2 { margin: 0 0 8px; }
+  .tools { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tools button { background: #252834; color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+                  font-size: 12px; padding: 4px 9px; cursor: pointer; }
+  .tools button:hover { border-color: var(--accent); }
+  .tools button[aria-pressed=true] { border-color: var(--accent); background: #3a3320; color: var(--accent); }
+  .tools button:disabled { opacity: .35; cursor: default; border-color: var(--line); }
+  .tools kbd { color: var(--dim); font: inherit; margin-right: 4px; }
+  .note { color: var(--dim); font-size: 12px; margin: 8px 0 0; }
+  #palette { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px 8px; }
+  #palette button { display: flex; gap: 6px; align-items: center; font-size: 12px; white-space: nowrap;
+                    background: none; border: 1px solid transparent; border-radius: 4px; color: var(--text);
+                    padding: 2px 4px; cursor: pointer; text-align: left; }
+  #palette button:hover { border-color: var(--line); }
+  #palette button[aria-pressed=true] { border-color: var(--accent); background: #2d3040; }
+  #palette button:disabled { opacity: .3; cursor: default; }
+  #palette i { width: 14px; height: 14px; display: inline-block; flex: none; }
+  #palette .unused span { color: var(--dim); }
+  #slice { display: grid; grid-template-columns: repeat(8, var(--cell)); gap: 1px; user-select: none; touch-action: none;
+           width: max-content; }
+  #slice i { width: var(--cell); height: var(--cell); background: #23252f; display: block; cursor: crosshair; }
+  #slice i:hover { outline: 1px solid var(--accent); outline-offset: -1px; }
+  .edge { color: var(--dim); font-size: 11px; margin: 2px 0; }
+  #text { background: #111217; border: 1px solid var(--line); border-radius: 4px; padding: 8px; margin: 6px 0 0;
+          font-size: 11px; line-height: 1.25; overflow: auto; white-space: pre; }
+  details summary { cursor: pointer; color: var(--dim); font-size: 12px; margin-top: 8px; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+  @media (max-width: 900px) { body { grid-template-columns: 140px 1fr 300px; } }
+</style>
+</head>
+<body>
+<aside id="list"></aside>
+<section id="stage">
+  <canvas id="view"></canvas>
+  <div id="title"></div>
+  <div id="say"></div>
+  <div id="bar">
+    <label><input type="checkbox" id="spin"> turn</label>
+    <label title="The game stands every column on the ground: a gap under a voxel is filled, and a model drawn hovering is set down. Looking only: untick to paint.">
+      <input type="checkbox" id="solid"> filled to the ground, as the game builds it</label>
+    <span>drag the empty space, or hold shift, to turn &middot; wheel to zoom</span>
+  </div>
+</section>
+<aside id="side">
+  <h2>Click the model to</h2>
+  <div class="tools" id="tools"></div>
+  <p class="note" id="hint"></p>
+  <hr>
+  <h2>In this material</h2>
+  <div id="palette"></div>
+  <hr>
+  <h2 id="slice-head">One layer, from above</h2>
+  <div class="tools" id="layer-tools"></div>
+  <div class="edge">back</div>
+  <div id="slice"></div>
+  <div class="edge">front</div>
+  <hr>
+  <div class="tools" id="file-tools"></div>
+  <details>
+    <summary>as it goes in the file</summary>
+    <pre id="text"></pre>
+  </details>
+</aside>
+
+<script>
+"use strict";
+/* The art of models/ as tools/bake_models.py reads it, to look at and to
+ * change. A creature or a piece of gear is layers, top first. Here every
+ * layer is the layer itself seen from above, eight rows of eight material
+ * keys with the back row first, which is one of the two ways the files
+ * draw one; a model drawn the other way, as a front view and a side that
+ * carve it, is made into this as it is read, and is written this way once
+ * it has been changed. */
+const CELL = 8, MAX_LAYERS = 14, EMPTY = "........";
+
+function parseMaterials(text) {
+  const mats = [];
+  for (const raw of text.split("\n")) {
+    const f = raw.split("#")[0].trim().split(/\s+/);
+    if (f.length !== 5) continue;
+    mats.push({ name: f[0], rgb: [f[1], f[2], f[3]].map(v => Math.round(v * 255 / 31)), key: f[4] });
+  }
+  return mats;
+}
+
+/* bake_models.py's layer_voxel: whether two views have a voxel there. */
+function layerVoxel(layer, x, y) {
+  const front = layer[0], side = layer[1];
+  if (front[x] === "." || side[y] !== "#") return false;
+  if (layer.length === 4) {
+    const trim = +layer[3][y];
+    const left = front.length - front.replace(/^\.+/, "").length;
+    const right = front.replace(/\.+$/, "").length;
+    return left + trim <= x && x < right - trim;
+  }
+  return true;
+}
+
+/* A layer drawn as views, as its eight rows: the front half in the
+ * front's colours and the back half in the back view's, or the layer's
+ * commonest, which is what the game makes of it. */
+function rowsOfViews(layer) {
+  const front = layer[0];
+  const back = layer.length >= 3 ? [...layer[2]].reverse().join("") : null;
+  const used = [...front].filter(c => c !== ".");
+  let plain = ".";
+  for (const c of used) if (plain === "." || used.filter(u => u === c).length > used.filter(u => u === plain).length) plain = c;
+  const rows = [];
+  for (let y = 0; y < CELL; y++) {
+    let row = "";
+    for (let x = 0; x < CELL; x++)
+      row += !layerVoxel(layer, x, y) ? "." : y >= CELL / 2 ? front[x] : back && back[x] !== "." ? back[x] : plain;
+    rows.push(row);
+  }
+  return rows;
+}
+
+function parseLayered(text, file) {
+  const models = [];
+  let cur = null;
+  text.split("\n").forEach((raw, n) => {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim() || line.startsWith("#")) return;
+    if (line.startsWith("=")) {
+      const m = line.match(/^=\s+(\S+)\s+(.*)$/);
+      if (!m) throw new Error(`${file}:${n + 1}: want "= <id> <name>"`);
+      cur = { kind: "layers", file, id: m[1], name: m[2], vox: [], lines: [], views: false };
+      models.push(cur);
+      return;
+    }
+    const parts = line.trim().split(/\s+/);
+    if (!cur || ![2, 3, 4, CELL].includes(parts.length) || parts.some(p => p.length !== CELL))
+      throw new Error(`${file}:${n + 1}: want a layer as views or as its 8 rows of 8`);
+    cur.lines.push(parts.join(" "));
+    if (parts.length === CELL) cur.vox.push(parts);
+    else { cur.views = true; cur.vox.push(rowsOfViews(parts)); }
+  });
+  return models;
+}
+
+function parseTerrain(text, file) {
+  const models = [];
+  let cur = null;
+  for (const raw of text.split("\n")) {
+    const row = raw.trim();
+    if (!row || row.startsWith("#")) continue;
+    if (row.startsWith("= ")) {
+      cur = { kind: "top", file, id: "", name: row.slice(2), vox: [[]], lines: [], views: false };
+      models.push(cur);
+    } else if (cur && row.length === CELL) { cur.vox[0].push(row); cur.lines.push(row); }
+  }
+  return models;
+}
+
+/* The model as columns of material keys, bottom first: cols[x][y][z], ""
+ * for nothing. Column y 0 is the back. With solid it is bake_models.py's
+ * solid(), which is what the game stands on a cell: gaps under a voxel
+ * are filled, with a "~" before the key of what fills them, and a model
+ * drawn hovering is set down. */
+function build(model, solid) {
+  const cols = Array.from({ length: CELL }, () => Array.from({ length: CELL }, () => []));
+  let layers = model.vox;
+  if (solid && model.kind !== "top")
+    while (layers.length && !layers[layers.length - 1].join("").replace(/\./g, "")) layers = layers.slice(0, -1);
+  const height = layers.length;
+  for (let z = 0; z < height; z++) {
+    const layer = layers[height - 1 - z];
+    for (let x = 0; x < CELL; x++) for (let y = 0; y < CELL; y++) {
+      if (layer[y][x] === ".") continue;
+      const col = cols[x][y];
+      while (col.length < z) {
+        if (!solid) { col.push(""); continue; }
+        // What the front view shows there: the voxel nearest the front.
+        const under = layers[height - 1 - col.length];
+        let seen = state.shadow;
+        for (let k = 0; k < CELL; k++) if (under[k][x] !== ".") seen = under[k][x];
+        col.push("~" + seen);
+      }
+      col.push(layer[y][x]);
+    }
+  }
+  return cols;
+}
+
+/* ---- the model on show, and changing it ------------------------------ */
+const $ = id => document.getElementById(id);
+const state = { mats: [], byKey: {}, shadow: "k", models: [], at: 0, cols: null,
+                yaw: +(new URLSearchParams(location.search).get("yaw") ?? 0.6), pitch: 0.5, zoom: 1,
+                tool: "add", brush: "", mirror: false, layer: 0, hover: null, faces: [], drag: null };
+
+const model = () => state.models[state.at];
+const snapshot = m => JSON.stringify(m.vox);
+const isDirty = m => snapshot(m) !== m.saved;
+const colourOf = key => (state.byKey[key] || { rgb: [255, 0, 255] }).rgb;
+const css = (rgb, light = 1) => `rgb(${rgb.map(v => Math.round(Math.min(255, v * light))).join(",")})`;
+const escape = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const say = text => { $("say").textContent = text || ""; };
+
+/* The model's block as the file has it, or would. One that is drawn as
+ * views and has not been changed stays as it is. */
+function blockText(m) {
+  const head = m.kind === "top" ? `= ${m.name}` : `= ${m.id} ${m.name}`;
+  if (!isDirty(m)) return head + "\n" + m.lines.join("\n") + "\n";
+  return head + "\n" + (m.kind === "top" ? m.vox[0] : m.vox.map(l => l.join(" "))).join("\n") + "\n";
+}
+
+function remember(m) {
+  m.undo.push(snapshot(m));
+  if (m.undo.length > 300) m.undo.shift();
+  m.redo = [];
+}
+
+function undo(back) {
+  const m = model(), from = back ? m.undo : m.redo, to = back ? m.redo : m.undo;
+  if (!from.length) return;
+  to.push(snapshot(m));
+  m.vox = JSON.parse(from.pop());
+  changed();
+}
+
+/* The key at a place, z 0 at the ground, and putting one there. Putting
+ * one above the top adds layers, and taking the last from the top layers
+ * takes those away. */
+function keyAt(m, x, y, z) {
+  const layer = m.vox[m.vox.length - 1 - z];
+  return layer ? layer[y][x] : ".";
+}
+
+function put(m, x, y, z, key) {
+  if (x < 0 || y < 0 || z < 0 || x >= CELL || y >= CELL || z >= MAX_LAYERS) return false;
+  if (m.kind === "top" && (z > 0 || key === ".")) return false;
+  if (keyAt(m, x, y, z) === key) return false;
+  while (m.vox.length <= z) m.vox.unshift(Array(CELL).fill(EMPTY));
+  const layer = m.vox[m.vox.length - 1 - z];
+  layer[y] = layer[y].slice(0, x) + key + layer[y].slice(x + 1);
+  while (m.kind !== "top" && m.vox.length > 1 && !m.vox[0].join("").replace(/\./g, "")) m.vox.shift();
+  return true;
+}
+
+/* One touch of the tool in hand at a voxel, and at its mirror image if
+ * that is wanted. */
+function touch(x, y, z, key) {
+  const m = model();
+  let did = put(m, x, y, z, key);
+  if (state.mirror && x !== CELL - 1 - x) did = put(m, CELL - 1 - x, y, z, key) || did;
+  return did;
+}
+
+/* What a face of the model, or a square of the ground, gets from the tool. */
+function useTool(face, tool, first) {
+  const m = model();
+  if ($("solid").checked) { say("Untick \"filled to the ground\" to paint: that view is the game's, with voxels in it that are not in the model."); return; }
+  if (tool === "pick") {
+    if (face.z >= 0) { state.brush = keyAt(m, face.x, face.y, face.z); state.tool = state.before || "add"; }
+    return changed();
+  }
+  if (first) remember(m);
+  let did = false;
+  if (tool === "add") did = touch(face.x + face.n[0], face.y + face.n[1], face.z + face.n[2], state.brush);
+  else if (face.z >= 0) did = touch(face.x, face.y, face.z, tool === "erase" ? "." : state.brush);
+  if (did) {
+    if (tool === "add") state.layer = face.z + face.n[2];
+    changed();
+  } else if (first) m.undo.pop();
+}
+
+function select(n) {
+  state.at = (n + state.models.length) % state.models.length;
+  const m = model();
+  history.replaceState(null, "", "#" + encodeURIComponent(m.file + ":" + m.name));
+  if (m.kind === "top" && (state.tool === "add" || state.tool === "erase")) state.tool = "paint";
+  say("");
+  changed();
+  const current = document.querySelector("#list button[aria-current=true]");
+  if (current) current.scrollIntoView({ block: "nearest" });
+}
+
+/* After any change: the picture, the panels and the marks that say the
+ * model is not what the file has. */
+function changed() {
+  const m = model(), top = m.kind === "top";
+  state.layer = Math.max(0, Math.min(state.layer, m.vox.length - 1));
+  state.cols = build(m, $("solid").checked);
+  let voxels = 0;
+  const used = new Set();
+  for (const layer of m.vox) for (const row of layer) for (const c of row) if (c !== ".") { voxels++; used.add(c); }
+  $("title").innerHTML = `${escape(m.name)}<small>models/${m.file} &middot; ` +
+    (top ? "an 8 by 8 top, the bitmap of a floor or a wall" : `${m.vox.length} of ${MAX_LAYERS} layers &middot; ${voxels} voxels`) +
+    (isDirty(m) ? ` &middot; <span style="color:var(--accent)">changed, not saved</span>` : "") + `</small>`;
+  document.querySelectorAll("#list button").forEach((b, i) => {
+    b.setAttribute("aria-current", i === state.at);
+    b.classList.toggle("dirty", isDirty(state.models[i]));
+  });
+
+  const button = (box, label, key, pressed, can, act, title = "") => {
+    const b = document.createElement("button");
+    b.innerHTML = (key ? `<kbd>${key}</kbd>` : "") + escape(label);
+    b.title = title;
+    b.disabled = !can;
+    if (pressed !== null) b.setAttribute("aria-pressed", pressed);
+    b.onclick = act;
+    box.append(b);
+  };
+  const tools = $("tools");
+  tools.innerHTML = "";
+  const pickTool = t => () => { if (t === "pick") state.before = state.tool; state.tool = t; changed(); };
+  button(tools, "add", "1", state.tool === "add", !top, pickTool("add"), "a voxel against the face you click, or on the ground");
+  button(tools, "paint", "2", state.tool === "paint", true, pickTool("paint"), "the voxel you click, in the material");
+  button(tools, "erase", "3", state.tool === "erase", !top, pickTool("erase"), "take the voxel you click away. The right button does this with any tool");
+  button(tools, "pick", "4", state.tool === "pick", true, pickTool("pick"), "take the material of the voxel you click. Alt and click does this with any tool");
+  button(tools, "mirror", "5", state.mirror, !top, () => { state.mirror = !state.mirror; changed(); }, "do the same on the other side, left for right");
+  $("hint").textContent = {
+    add: "Click a face to put a voxel against it. Click the ground to start a column.",
+    paint: "Click or drag over voxels to colour them.",
+    erase: "Click or drag over voxels to take them away.",
+    pick: "Click a voxel to paint with its material.",
+  }[state.tool] + (top ? "" : " Right button erases.");
+
+  const pal = $("palette");
+  pal.innerHTML = "";
+  for (const mat of state.mats) {
+    const b = document.createElement("button");
+    b.disabled = mat.key === "-";               // no key: it cannot be written in these files
+    b.setAttribute("aria-pressed", state.brush === mat.key);
+    if (!used.has(mat.key)) b.className = "unused";
+    b.innerHTML = `<i style="background:${css(mat.rgb)}"></i><span>${escape(mat.key === "-" ? " " : mat.key)} ${escape(mat.name)}</span>`;
+    b.onclick = () => { state.brush = mat.key; if (state.tool === "erase" || state.tool === "pick") state.tool = top ? "paint" : "add"; changed(); };
+    pal.append(b);
+  }
+
+  // The layer in hand, from above. Layer 1 is on the ground.
+  const z = state.layer, layer = m.vox[m.vox.length - 1 - z];
+  $("slice-head").textContent = top ? "The top, from above" : `Layer ${z + 1} of ${m.vox.length}, from above`;
+  const lt = $("layer-tools");
+  lt.innerHTML = "";
+  if (!top) {
+    const blank = () => Array(CELL).fill(EMPTY);
+    button(lt, "up", "]", null, z < m.vox.length - 1, () => { state.layer++; changed(); });
+    button(lt, "down", "[", null, z > 0, () => { state.layer--; changed(); });
+    button(lt, "+ layer on top", "", null, m.vox.length < MAX_LAYERS, () => {
+      remember(m); m.vox.unshift(blank()); state.layer = m.vox.length - 1; changed();
+    }, `at most ${MAX_LAYERS}. An empty top layer goes when you next take a voxel away`);
+    button(lt, "raise", "", null, m.vox.length < MAX_LAYERS, () => { remember(m); m.vox.push(blank()); state.layer++; changed(); },
+           "an empty layer underneath: in the flat view it hovers, in 3D the game sets it down");
+    button(lt, "lower", "", null, m.vox.length > 1 && !m.vox[m.vox.length - 1].join("").replace(/\./g, ""),
+           () => { remember(m); m.vox.pop(); state.layer--; changed(); }, "take an empty layer from underneath");
+  }
+  const slice = $("slice");
+  slice.innerHTML = "";
+  for (let y = 0; y < CELL; y++) for (let x = 0; x < CELL; x++) {
+    const cell = document.createElement("i"), c = layer[y][x];
+    cell.dataset.x = x; cell.dataset.y = y;
+    if (c !== ".") { cell.style.background = css(colourOf(c)); cell.title = c + " " + (state.byKey[c] || { name: "?" }).name; }
+    slice.append(cell);
+  }
+
+  const ft = $("file-tools");
+  ft.innerHTML = "";
+  button(ft, "undo", "", null, m.undo.length > 0, () => undo(true), "cmd or ctrl Z");
+  button(ft, "redo", "", null, m.redo.length > 0, () => undo(false), "shift cmd or ctrl Z");
+  button(ft, "revert", "", null, isDirty(m), () => { remember(m); m.vox = JSON.parse(m.saved); changed(); }, "back to what the file has");
+  button(ft, "save", "", null, isDirty(m), save, "cmd or ctrl S: write this model into models/" + m.file);
+  $("text").textContent = blockText(m);
+  draw();
+}
+
+async function save() {
+  const m = model();
+  if (!isDirty(m)) return;
+  let reply, words;
+  try {
+    reply = await fetch("save", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: m.file, kind: m.kind, id: m.id, name: m.name, text: blockText(m) }) });
+    words = await reply.text();
+  } catch (e) { return say("Not saved: the editor's server is not answering. Is tools/voxedit.py still running?"); }
+  if (!reply.ok) return say("Not saved: " + words);
+  m.lines = m.kind === "top" ? [...m.vox[0]] : m.vox.map(l => l.join(" "));
+  m.views = false;
+  m.saved = snapshot(m);
+  changed();
+  say("Saved into models/" + m.file + ". Run make to build it into the ROM.");
+}
+
+/* ---- the picture ----------------------------------------------------- */
+/* The eye is in front and above, and there is no perspective: a voxel is
+ * the same size wherever it is. */
+const FACES = [
+  { n: [0, 0, 1], light: 1.00, at: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]] },
+  { n: [0, 0, -1], light: 0.35, at: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]] },
+  { n: [0, 1, 0], light: 0.80, at: [[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]] },
+  { n: [0, -1, 0], light: 0.55, at: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]] },
+  { n: [1, 0, 0], light: 0.66, at: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]] },
+  { n: [-1, 0, 0], light: 0.66, at: [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]] },
+];
+
+function draw() {
+  const canvas = $("view"), ratio = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * ratio) || canvas.height !== Math.round(h * ratio)) {
+    canvas.width = Math.round(w * ratio);
+    canvas.height = Math.round(h * ratio);
+  }
+  const g = canvas.getContext("2d");
+  g.setTransform(ratio, 0, 0, ratio, 0, 0);
+  g.clearRect(0, 0, w, h);
+  state.faces = [];
+  if (!state.cols) return;
+
+  const cy = Math.cos(state.yaw), sy = Math.sin(state.yaw), cp = Math.cos(state.pitch), sp = Math.sin(state.pitch);
+  const scale = Math.min(w, h) / 20 * state.zoom;
+  // A place in the model, in voxels from its back left bottom corner, to the picture.
+  const to = (x, y, z) => {
+    const X = x - CELL / 2, Y = y - CELL / 2, Z = z - 5;
+    const xr = X * cy - Y * sy, yr = X * sy + Y * cy;
+    return [w / 2 + xr * scale, h / 2 - (Z * cp - yr * sp) * scale];
+  };
+  const facing = n => (n[0] * sy + n[1] * cy) * cp + n[2] * sp > 0;
+  const quad = (face, x, y, z) => face.at.map(c => to(x + c[0], y + c[1], z + c[2]));
+  const trace = pts => {
+    g.beginPath();
+    pts.forEach((p, k) => { if (k) g.lineTo(p[0], p[1]); else g.moveTo(p[0], p[1]); });
+    g.closePath();
+  };
+
+  // The cell it stands on, every square of it a place to start a column,
+  // and which edge is its front.
+  g.lineWidth = 1;
+  g.strokeStyle = "#2c2f3b";
+  for (let x = 0; x < CELL; x++) for (let y = 0; y < CELL; y++) {
+    const pts = quad(FACES[0], x, y, -1);
+    trace(pts);
+    g.stroke();
+    if (model().kind !== "top" && !$("solid").checked) state.faces.push({ pts, x, y, z: -1, n: FACES[0].n });
+  }
+  g.strokeStyle = "#f0b54a";
+  g.lineWidth = 2;
+  g.beginPath();
+  const fa = to(0, CELL, 0), fb = to(CELL, CELL, 0);
+  g.moveTo(fa[0], fa[1]); g.lineTo(fb[0], fb[1]);
+  g.stroke();
+  const label = to(CELL / 2, CELL + 1.2, 0);
+  g.fillStyle = "#8d8f9b";
+  g.font = "11px ui-monospace, Menlo, monospace";
+  g.textAlign = "center";
+  g.fillText("front", label[0], label[1] + 4);
+
+  // Voxels are painted far to near along each axis in turn, which is
+  // right whichever way the eye looks: one can only hide another that is
+  // no nearer than it along all three.
+  const cols = state.cols;
+  const filled = (x, y, z) => x >= 0 && y >= 0 && z >= 0 && x < CELL && y < CELL && !!(cols[x][y][z]);
+  const shown = FACES.filter(face => facing(face.n));
+  g.lineWidth = 0.6;
+  g.strokeStyle = "rgba(0,0,0,.28)";
+  for (let i = 0; i < CELL; i++) {
+    const x = sy > 0 ? i : CELL - 1 - i;
+    for (let j = 0; j < CELL; j++) {
+      const y = cy > 0 ? j : CELL - 1 - j;
+      for (let z = 0; z < cols[x][y].length; z++) {
+        let key = cols[x][y][z];
+        if (!key) continue;
+        const fill = key[0] === "~";       // not in the model: what the game puts under it
+        if (fill) key = key.slice(1);
+        for (const face of shown) {
+          if (filled(x + face.n[0], y + face.n[1], z + face.n[2])) continue;
+          const pts = quad(face, x, y, z);
+          trace(pts);
+          g.fillStyle = css(colourOf(key), face.light * (fill ? 0.6 : 1));
+          g.fill();
+          g.stroke();
+          if (!$("solid").checked) state.faces.push({ pts, x, y, z, n: face.n });
+        }
+      }
+    }
+  }
+
+  // The layer the panel has from above, as a frame round it.
+  if (model().kind !== "top" && !$("solid").checked) {
+    g.strokeStyle = "rgba(240,181,74,.55)";
+    g.lineWidth = 1;
+    for (const z of [state.layer, state.layer + 1]) {
+      trace([to(0, 0, z), to(CELL, 0, z), to(CELL, CELL, z), to(0, CELL, z)]);
+      g.stroke();
+    }
+  }
+  // And what the pointer is on.
+  const on = state.hover;
+  const at = on && state.faces.find(f => f.x === on.x && f.y === on.y && f.z === on.z && f.n === on.n);
+  if (at) {
+    trace(at.pts);
+    g.fillStyle = state.tool === "erase" ? "rgba(255,90,70,.45)" : "rgba(240,181,74,.45)";
+    g.fill();
+    g.strokeStyle = "#f0b54a";
+    g.lineWidth = 1.5;
+    g.stroke();
+  }
+}
+
+/* The face at a place in the picture: the last painted of those it is in. */
+function faceAt(px, py) {
+  for (let i = state.faces.length - 1; i >= 0; i--) {
+    const p = state.faces[i].pts;
+    let side = 0, inside = true;
+    for (let k = 0; k < 4 && inside; k++) {
+      const a = p[k], b = p[(k + 1) % 4];
+      const cross = (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0]);
+      if (cross !== 0) { if (side && Math.sign(cross) !== side) inside = false; side = Math.sign(cross); }
+    }
+    if (inside) return state.faces[i];
+  }
+  return null;
+}
+
+function frame() {
+  if ($("spin").checked && !state.drag && !location.search.includes("yaw")) {
+    state.yaw += 0.008;
+    draw();
+  }
+  requestAnimationFrame(frame);
+}
+
+async function load() {
+  const read = async name => {
+    const r = await fetch("models/" + name);
+    if (!r.ok) throw new Error(`models/${name}: ${r.status}. Start this page with tools/voxedit.py (make edit).`);
+    return r.text();
+  };
+  const [materials, creatures, gear, terrain] = await Promise.all(
+    ["materials.txt", "creatures.txt", "gear.txt", "terrain.txt"].map(read));
+  state.mats = parseMaterials(materials);
+  state.byKey = Object.fromEntries(state.mats.filter(m => m.key !== "-").map(m => [m.key, m]));
+  state.shadow = (state.mats.find(m => m.name === "SHADOW") || { key: "k" }).key;
+  state.brush = state.mats.find(m => m.key !== "-").key;
+  const groups = [
+    ["Creatures", parseLayered(creatures, "creatures.txt")],
+    ["Gear", parseLayered(gear, "gear.txt")],
+    ["Terrain", parseTerrain(terrain, "terrain.txt")],
+  ];
+  state.models = groups.flatMap(g => g[1]);
+  for (const m of state.models) Object.assign(m, { saved: snapshot(m), undo: [], redo: [] });
+  const list = $("list");
+  let n = 0;
+  for (const [name, models] of groups) {
+    const head = document.createElement("h2");
+    head.textContent = `${name} (${models.length})`;
+    list.append(head);
+    for (const m of models) {
+      const button = document.createElement("button"), index = n++;
+      button.innerHTML = `<span class="id">${escape(m.id)}</span><span>${escape(m.name)}</span>`;
+      button.onclick = () => select(index);
+      list.append(button);
+    }
+  }
+  const wanted = decodeURIComponent(location.hash.slice(1));
+  const found = state.models.findIndex(m => m.file + ":" + m.name === wanted);
+  select(found < 0 ? 0 : found);
+  requestAnimationFrame(frame);
+}
+
+/* ---- hands ----------------------------------------------------------- */
+const view = $("view");
+const where = e => { const r = view.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+view.addEventListener("contextmenu", e => e.preventDefault());
+view.addEventListener("pointerdown", e => {
+  const [px, py] = where(e), face = e.shiftKey ? null : faceAt(px, py);
+  if (view.setPointerCapture && e.pointerId !== undefined) try { view.setPointerCapture(e.pointerId); } catch (_) {}
+  if (!face) { state.drag = { turn: true, last: [e.clientX, e.clientY] }; return; }
+  const tool = e.altKey ? "pick" : e.button === 2 ? "erase" : state.tool;
+  state.drag = { tool, seen: face.x + "," + face.y + "," + face.z };
+  useTool(face, tool, true);
+});
+view.addEventListener("pointermove", e => {
+  const [px, py] = where(e);
+  if (state.drag && state.drag.turn) {
+    state.yaw += (e.clientX - state.drag.last[0]) * 0.01;
+    state.pitch = Math.max(0.05, Math.min(1.5, state.pitch + (e.clientY - state.drag.last[1]) * 0.01));
+    state.drag.last = [e.clientX, e.clientY];
+    return draw();
+  }
+  const face = faceAt(px, py);
+  state.hover = face;
+  // Paint and erase go on over what the pointer crosses; a voxel is added a click at a time.
+  if (state.drag && face && (state.drag.tool === "paint" || state.drag.tool === "erase")) {
+    const id = face.x + "," + face.y + "," + face.z;
+    if (id !== state.drag.seen) {
+      state.drag.seen = id;
+      useTool(face, state.drag.tool, false);
+    }
+  }
+  draw();
+});
+const letGo = () => { state.drag = null; };
+view.addEventListener("pointerup", letGo);
+view.addEventListener("pointercancel", letGo);
+view.addEventListener("pointerleave", () => { state.hover = null; draw(); });
+view.addEventListener("wheel", e => {
+  e.preventDefault();
+  state.zoom = Math.max(0.4, Math.min(3, state.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+  draw();
+}, { passive: false });
+
+// The layer from above takes paint too: the left button the material, the right nothing.
+const slice = $("slice");
+let slicing = null;
+function sliceCell(cell, first, erase) {
+  const m = model(), x = +cell.dataset.x, y = +cell.dataset.y;
+  if ($("solid").checked) return say("Untick \"filled to the ground\" to paint.");
+  if (first) { remember(m); slicing = erase && m.kind !== "top" ? "." : state.brush; }
+  if (slicing === null) return;
+  if (touch(x, y, state.layer, slicing)) changed();
+  else if (first) m.undo.pop();
+}
+slice.addEventListener("contextmenu", e => e.preventDefault());
+slice.addEventListener("pointerdown", e => {
+  const cell = e.target.closest("i[data-x]");
+  if (cell) { e.preventDefault(); sliceCell(cell, true, e.button === 2); }
+});
+slice.addEventListener("pointermove", e => {
+  if (slicing === null || !e.buttons) return;
+  const under = document.elementFromPoint(e.clientX, e.clientY);
+  const cell = under && under.closest && under.closest("#slice i[data-x]");
+  if (cell) sliceCell(cell, false, false);
+});
+window.addEventListener("pointerup", () => { slicing = null; });
+
+window.addEventListener("resize", draw);
+window.addEventListener("keydown", e => {
+  const m = model();
+  if (!m) return;
+  const command = e.metaKey || e.ctrlKey;
+  if (command && e.key.toLowerCase() === "z") { undo(!e.shiftKey); e.preventDefault(); return; }
+  if (command && e.key.toLowerCase() === "s") { save(); e.preventDefault(); return; }
+  if (command || e.altKey) return;
+  const top = m.kind === "top";
+  if (e.key === "ArrowDown") { select(state.at + 1); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { select(state.at - 1); e.preventDefault(); }
+  else if (e.key === "1" && !top) { state.tool = "add"; changed(); }
+  else if (e.key === "2") { state.tool = "paint"; changed(); }
+  else if (e.key === "3" && !top) { state.tool = "erase"; changed(); }
+  else if (e.key === "4") { state.before = state.tool; state.tool = "pick"; changed(); }
+  else if (e.key === "5" && !top) { state.mirror = !state.mirror; changed(); }
+  else if (e.key === "]") { state.layer++; changed(); }
+  else if (e.key === "[") { state.layer--; changed(); }
+  // A material's key is the key that picks it.
+  else if (state.byKey[e.key]) { state.brush = e.key; changed(); }
+});
+$("solid").addEventListener("change", () => { say(""); changed(); });
+$("spin").addEventListener("change", draw);
+window.addEventListener("beforeunload", e => { if (state.models.some(isDirty)) { e.preventDefault(); e.returnValue = ""; } });
+
+// For checking this page's reading of the models against bake_models.py:
+// with ?dump the page ends with every model as the game would build it,
+// and as this page would write it.
+load().then(() => {
+  if (!location.search.includes("dump")) return;
+  const pre = document.createElement("pre");
+  pre.id = "dump";
+  pre.textContent = JSON.stringify(Object.fromEntries(state.models.map(m => [m.file + ":" + m.name, {
+    solid: build(m, true).map(plane => plane.map(col => col.map(k => k.replace("~", "")))),
+    rows: m.kind === "top" ? m.vox[0] : m.vox.map(l => l.join(" ")),
+  }])));
+  document.body.append(pre);
+}).catch(e => say(e.message));
+</script>
+</body>
+</html>

@@ -225,7 +225,7 @@ FRAMES ?= 180
 # command line.
 MISTER ?= root@mister.local
 
-.PHONY: all release debug shot deploy ship clean snaproms
+.PHONY: all release debug shot deploy ship clean snaproms edit
 
 all: release
 
@@ -361,6 +361,12 @@ snaproms:
 	$(MAKE) SNAP=2 POLY=2 TERRAIN_ROM=1
 	cp $(ROMDIR)/voxelike.32x $(ROMDIR)/snap-rom.32x
 	$(MAKE) POLY=2
+
+# The art in models/, in the browser: click a model to add, colour and
+# take away its voxels, and save it back into its file. The next make
+# bakes it into the ROM.
+edit:
+	@python3 tools/voxedit.py
 
 ship:
 	@YES=$(YES) tools/ship.sh
