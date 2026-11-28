@@ -72,8 +72,8 @@
   <div id="say"></div>
   <div id="bar">
     <label><input type="checkbox" id="spin"> turn</label>
-    <label title="The game stands every column on the ground: a gap under a voxel is filled, and a model drawn hovering is set down. Looking only: untick to paint.">
-      <input type="checkbox" id="solid"> filled to the ground, as the game builds it</label>
+    <label title="See how the game positions the model. Legacy silhouette creatures are grounded and empty voxels remain clear. Untick to paint.">
+      <input type="checkbox" id="solid"> preview the baked model</label>
     <span>drag the empty space, or hold shift, to turn &middot; wheel to zoom</span>
   </div>
 </section>
@@ -188,16 +188,13 @@ function parseTerrain(text, file) {
   return models;
 }
 
-/* The model as columns of material keys, bottom first: cols[x][y][z], ""
- * for nothing. Column y 0 is the back. With solid it is bake_models.py's
- * solid(), which is what the game stands on a cell: gaps under a voxel
- * are filled, with a "~" before the key of what fills them, and a model
- * drawn hovering is set down. */
+/* Material keys in columns, bottom first. Empty keys are transparent.
+ * The baked preview grounds legacy silhouette creatures like the ROM. */
 function build(model, solid) {
   const cols = Array.from({ length: CELL }, () => Array.from({ length: CELL }, () => []));
-  const hollow = model.file === "gear.txt" && model.name === "hero_skeleton";
+  const keepHeight = !model.views || (model.file === "gear.txt" && !model.name.startsWith("body_"));
   let layers = model.vox;
-  if (solid && model.kind !== "top")
+  if (solid && !keepHeight)
     while (layers.length && !layers[layers.length - 1].join("").replace(/\./g, "")) layers = layers.slice(0, -1);
   const height = layers.length;
   for (let z = 0; z < height; z++) {
@@ -205,14 +202,7 @@ function build(model, solid) {
     for (let x = 0; x < CELL; x++) for (let y = 0; y < CELL; y++) {
       if (layer[y][x] === ".") continue;
       const col = cols[x][y];
-      while (col.length < z) {
-        if (!solid || hollow) { col.push(""); continue; }
-        // What the front view shows there: the voxel nearest the front.
-        const under = layers[height - 1 - col.length];
-        let seen = state.shadow;
-        for (let k = 0; k < CELL; k++) if (under[k][x] !== ".") seen = under[k][x];
-        col.push("~" + seen);
-      }
+      while (col.length < z) col.push("");
       col.push(layer[y][x]);
     }
   }
@@ -221,7 +211,7 @@ function build(model, solid) {
 
 /* ---- the model on show, and changing it ------------------------------ */
 const $ = id => document.getElementById(id);
-const state = { mats: [], byKey: {}, shadow: "k", models: [], at: 0, cols: null,
+const state = { mats: [], byKey: {}, models: [], at: 0, cols: null,
                 yaw: +(new URLSearchParams(location.search).get("yaw") ?? 0.6), pitch: 0.5, zoom: 1,
                 tool: "add", brush: "", mirror: false, layer: 0, hover: null, faces: [], drag: null };
 
@@ -286,7 +276,7 @@ function touch(x, y, z, key) {
 /* What a face of the model, or a square of the ground, gets from the tool. */
 function useTool(face, tool, first) {
   const m = model();
-  if ($("solid").checked) { say("Untick \"filled to the ground\" to paint: that view is the game's, with voxels in it that are not in the model."); return; }
+  if ($("solid").checked) { say("Untick \"preview the baked model\" to paint."); return; }
   if (tool === "pick") {
     if (face.z >= 0) { state.brush = keyAt(m, face.x, face.y, face.z); state.tool = state.before || "add"; }
     return changed();
@@ -494,15 +484,13 @@ function draw() {
     for (let j = 0; j < CELL; j++) {
       const y = cy > 0 ? j : CELL - 1 - j;
       for (let z = 0; z < cols[x][y].length; z++) {
-        let key = cols[x][y][z];
+        const key = cols[x][y][z];
         if (!key) continue;
-        const fill = key[0] === "~";       // not in the model: what the game puts under it
-        if (fill) key = key.slice(1);
         for (const face of shown) {
           if (filled(x + face.n[0], y + face.n[1], z + face.n[2])) continue;
           const pts = quad(face, x, y, z);
           trace(pts);
-          g.fillStyle = css(colourOf(key), face.light * (fill ? 0.6 : 1));
+          g.fillStyle = css(colourOf(key), face.light);
           g.fill();
           g.stroke();
           if (!$("solid").checked) state.faces.push({ pts, x, y, z, n: face.n });
@@ -566,7 +554,6 @@ async function load() {
     ["materials.txt", "creatures.txt", "gear.txt", "terrain.txt"].map(read));
   state.mats = parseMaterials(materials);
   state.byKey = Object.fromEntries(state.mats.filter(m => m.key !== "-").map(m => [m.key, m]));
-  state.shadow = (state.mats.find(m => m.name === "SHADOW") || { key: "k" }).key;
   state.brush = state.mats.find(m => m.key !== "-").key;
   const groups = [
     ["Creatures", parseLayered(creatures, "creatures.txt")],
@@ -641,7 +628,7 @@ const slice = $("slice");
 let slicing = null;
 function sliceCell(cell, first, erase) {
   const m = model(), x = +cell.dataset.x, y = +cell.dataset.y;
-  if ($("solid").checked) return say("Untick \"filled to the ground\" to paint.");
+  if ($("solid").checked) return say("Untick \"preview the baked model\" to paint.");
   if (first) { remember(m); slicing = erase && m.kind !== "top" ? "." : state.brush; }
   if (slicing === null) return;
   if (touch(x, y, state.layer, slicing)) changed();
@@ -693,7 +680,7 @@ load().then(() => {
   const pre = document.createElement("pre");
   pre.id = "dump";
   pre.textContent = JSON.stringify(Object.fromEntries(state.models.map(m => [m.file + ":" + m.name, {
-    solid: build(m, true).map(plane => plane.map(col => col.map(k => k.replace("~", "")))),
+    solid: build(m, true),
     rows: m.kind === "top" ? m.vox[0] : m.vox.map(l => l.join(" ")),
   }])));
   document.body.append(pre);

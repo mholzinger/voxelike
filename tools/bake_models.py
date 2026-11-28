@@ -12,11 +12,9 @@ can be checked without building a ROM.
 
 A camera that does turn (sh_src/persp.c) needs the creature itself. --solid
 writes each one as 8x8 columns of voxels, the same shape as a terrain model,
-so the renderer can stand it on a cell. Columns are solid from the ground
-up: where the side view is cut away under something solid the layer is
-filled out to it, a gap the front view shows (between legs, under a belly)
-is filled with shadow, and a creature drawn hovering is set down on the
-floor.
+so the renderer can stand it on a cell. Empty voxels stay empty even under
+a solid one. Legacy silhouette creatures with wholly blank bottom layers
+are still grounded; explicit layers and held gear keep their drawn height.
 """
 import argparse, os, struct, sys, zlib
 
@@ -125,25 +123,14 @@ def bake(creature, keys):
     return sprite
 
 
-def solid(creature, keys, shadow, hollow=False):
+def solid(creature, keys, keep_height=False):
     """Return cols[x][y]: the materials of a column, bottom first."""
     layers = creature["layers"]
     rows = len(layers[0]) == CELL         # drawn from above, a voxel at a time
-    while layers and not "".join(layers[-1] if rows else layers[-1][:1]).strip("."):
+    while not rows and not keep_height and layers and not layers[-1][0].strip("."):
         layers = layers[:-1]              # hovering: set it down
     height = len(layers)
     cols = [[[] for _ in range(CELL)] for _ in range(CELL)]
-
-    def filler(x, z):
-        """What stands in for a missing voxel under a solid one: the layer's
-        own material if the creature is that wide there, otherwise shadow."""
-        layer = layers[height - 1 - z]
-        if rows:
-            # What the front view would show there: the voxel nearest the front.
-            seen = [layer[y][x] for y in range(CELL) if layer[y][x] != "."]
-            return keys[seen[-1]] if seen else shadow
-        front = layer[0]
-        return keys[front[x]] if front[x] != "." else shadow
 
     for z in range(height):
         layer = layers[height - 1 - z]
@@ -152,7 +139,7 @@ def solid(creature, keys, shadow, hollow=False):
                 for y in range(CELL):
                     if layer[y][x] != ".":
                         col = cols[x][y]
-                        col += [0 if hollow else filler(x, k) for k in range(len(col), z)]
+                        col += [0] * (z - len(col))
                         col.append(keys[layer[y][x]])
             continue
         front = layer[0]
@@ -168,7 +155,7 @@ def solid(creature, keys, shadow, hollow=False):
             for y in range(CELL):
                 if layer_voxel(layer, x, y):
                     col = cols[x][y]
-                    col += [0 if hollow else filler(x, k) for k in range(len(col), z)]
+                    col += [0] * (z - len(col))
                     behind = keys[back[x]] if back and back[x] != "." else plain
                     col.append(keys[front[x]] if y >= CELL // 2 else behind)
     return cols
@@ -321,10 +308,9 @@ def main():
         textures = read_terrain(os.path.join(ROOT, "models/terrain.txt"), keys)
         write_header(args.header, mats, order, sprites, textures)
     if args.solid:
-        shadow = next(i for i, m in enumerate(mats, 1) if m[0] == "SHADOW")
         gear = read_creatures(os.path.join(ROOT, "models/gear.txt"), keys)
-        write_solid(args.solid, order, {ch: solid(creatures[ch], keys, shadow) for ch in wanted},
-                    [(g["name"], solid(g, keys, shadow, hollow=g["name"] == "hero_skeleton"))
+        write_solid(args.solid, order, {ch: solid(creatures[ch], keys) for ch in wanted},
+                    [(g["name"], solid(g, keys, keep_height=not g["name"].startswith("body_")))
                      for g in gear.values()])
     if args.preview:
         write_preview(args.preview, mats, order, sprites)

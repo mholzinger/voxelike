@@ -6,6 +6,10 @@
 /* The world as voxel.c holds it, for another renderer to read. */
 #define VOX_MODELS_MAX 38                  /* room for every terrain model */
 #define VOX_AIR_GAP 0xff                   /* marker between terrain and a jumping model */
+
+static inline int vox_is_air(unsigned material) {
+    return !material || material == VOX_AIR_GAP;
+}
 /* The terrain models are made when the ROM is built (terrain.h). make
  * TERRAIN_ROM=1 leaves them in the ROM, which is 39K of memory the game
  * does not use but slower to read; otherwise they are copied out of it

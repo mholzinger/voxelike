@@ -820,35 +820,49 @@ static void columns(const vcol_t model[CELL][CELL], int face, int x, int y, int 
             int32_t px = x0 + mx * xx + my * xy, py = y0 + mx * yx + my * yy;
             int left = (px + left_by) >> 17, right = (px + right_by + 0x1FFFF) >> 17;
             int foot = (py + near_by) >> 16, back = (py + far_by) >> 16;
-            int tall = (col->h * rise) >> 16;
-            int upper = back - tall, lip = foot - tall;
             if (left < lo) left = lo;
             if (right > hi) right = hi;
-            if (left >= right || upper >= FB_H || foot <= 0) continue;
-            if (lip <= upper) lip = upper + 1;
+            if (left >= right || foot <= 0) continue;
             int width = right - left;
-            uint16_t *at = (uint16_t *)(void *)((uint8_t *)persp_job.fb + (FIRST + upper * PAGE) * 2) + left;
-            unsigned colour = ((flash ? flash & ~7u : col->c[col->h - 1]) + lit) * 0x0101u;
-            int row = upper;
-            for (; row < lip; row++, at += PAGE) {
-                if ((unsigned)row >= FB_H) continue;
-                for (int w = 0; w < width; w++) at[w] = (uint16_t)colour;
-            }
-            /* The side shows down to the lower of the two columns in
-             * front of this one; they hide the rest of it. */
+
             int nx = mx + step_x, ny = my + step_y;
-            int front_x = (unsigned)nx < CELL ? vox_model_column(model, face, nx, my)->h : 0;
-            int front_y = (unsigned)ny < CELL ? vox_model_column(model, face, mx, ny)->h : 0;
-            int hidden = front_x < front_y ? front_x : front_y;
-            if (hidden < base) hidden = base;
-            if (hidden >= col->h) continue;
-            foot -= (hidden * rise) >> 16;
-            int32_t z = (int32_t)col->h << 16;
-            for (; row < foot && row < FB_H; row++, at += PAGE) {
-                z -= voxels;
-                if (row < 0) continue;
-                colour = ((flash ? flash & ~7u : col->c[z > 0 ? z >> 16 : 0]) + side) * 0x0101u;
-                for (int w = 0; w < width; w++) at[w] = (uint16_t)colour;
+            const vcol_t *front_x = (unsigned)nx < CELL ? vox_model_column(model, face, nx, my) : 0;
+            const vcol_t *front_y = (unsigned)ny < CELL ? vox_model_column(model, face, mx, ny) : 0;
+            int hidden = base;
+            if (front_x && front_y) {
+                int limit = front_x->h < front_y->h ? front_x->h : front_y->h;
+                while (hidden < limit && !vox_is_air(front_x->c[hidden]) &&
+                       !vox_is_air(front_y->c[hidden])) hidden++;
+            }
+            /* Each continuous stack has its own top. Leave framebuffer pixels
+             * between stacks untouched so anything behind can show through. */
+            for (int z = base; z < col->h;) {
+                while (z < col->h && vox_is_air(col->c[z])) z++;
+                int low = z;
+                while (z < col->h && !vox_is_air(col->c[z])) z++;
+                if (low == z) break;
+                int tall = (z * rise) >> 16;
+                int upper = back - tall, lip = foot - tall;
+                if (upper >= FB_H) continue;
+                if (lip <= upper) lip = upper + 1;
+                int row = upper;
+                uint16_t *at = (uint16_t *)(void *)((uint8_t *)persp_job.fb + (FIRST + upper * PAGE) * 2) + left;
+                unsigned colour = ((flash ? flash & ~7u : col->c[z - 1]) + lit) * 0x0101u;
+                for (; row < lip && row < FB_H; row++, at += PAGE) {
+                    if (row < 0) continue;
+                    for (int w = 0; w < width; w++) at[w] = (uint16_t)colour;
+                }
+                int bottom_voxel = hidden > low ? hidden : low;
+                int bottom = foot - ((bottom_voxel * rise) >> 16);
+                int32_t layer = z << 16;
+                for (; row < bottom && row < FB_H; row++, at += PAGE) {
+                    layer -= voxels;
+                    if (row < 0) continue;
+                    int sample = layer >> 16;
+                    if (sample < low) sample = low;
+                    colour = ((flash ? flash & ~7u : col->c[sample]) + side) * 0x0101u;
+                    for (int w = 0; w < width; w++) at[w] = (uint16_t)colour;
+                }
             }
         }
     }

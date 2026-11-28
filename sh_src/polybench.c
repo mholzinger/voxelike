@@ -16,7 +16,7 @@
 #ifdef POLYBENCH
 #include "mars.h"
 #include "text.h"
-#include "voxel.h"
+#include "voxel_world.h"
 #include "polybench.h"
 #include <stddef.h>
 void *malloc(size_t n);            /* port/libc.c */
@@ -577,34 +577,47 @@ static void draw_actor(const placed_t *a, const vcol_t model[CELL][CELL], int lo
             int32_t y = a->y + mx * a->yx + my * a->yy;
             int left = (x + left_by) >> 17, right = (x + right_by + 0x1FFFF) >> 17;
             int base = (y + near_by) >> 16, back = (y + far_by) >> 16;
-            int rise = (col->h * a->rise) >> 16;
-            int top = back - rise, lip = base - rise;
             if (left < lo) left = lo;
             if (right > hi) right = hi;
-            if (left >= right || top >= FB_H || base <= 0) continue;
-            if (lip <= top) lip = top + 1;
+            if (left >= right || base <= 0) continue;
             int width = right - left;
-            uint16_t *at = (uint16_t *)(void *)((uint8_t *)&MARS_FRAMEBUFFER + (FIRST + top * PAGE) * 2) + left;
-            unsigned colour = (unsigned)(col->c[col->h - 1] + 6) * 0x0101u;
-            int row = top;
-            for (; row < lip; row++, at += PAGE) {
-                if ((unsigned)row >= FB_H) continue;
-                for (int w = 0; w < width; w++) at[w] = (uint16_t)colour;
-            }
-            /* The side shows down to the lower of the two columns in
-             * front of this one; they hide the rest of it. */
+
             int nx = mx + a->step_x, ny = my + a->step_y;
-            int front_x = (unsigned)nx < CELL ? model[nx][my].h : 0;
-            int front_y = (unsigned)ny < CELL ? model[mx][ny].h : 0;
-            int hidden = front_x < front_y ? front_x : front_y;
-            if (hidden >= col->h) continue;
-            base -= (hidden * a->rise) >> 16;
-            int32_t z = (int32_t)col->h << 16;
-            for (; row < base && row < FB_H; row++, at += PAGE) {
-                z -= a->voxels;
-                if (row < 0) continue;
-                colour = (unsigned)(col->c[z > 0 ? z >> 16 : 0] + 3) * 0x0101u;
-                for (int w = 0; w < width; w++) at[w] = (uint16_t)colour;
+            const vcol_t *front_x = (unsigned)nx < CELL ? &model[nx][my] : 0;
+            const vcol_t *front_y = (unsigned)ny < CELL ? &model[mx][ny] : 0;
+            int hidden = 0;
+            if (front_x && front_y) {
+                int limit = front_x->h < front_y->h ? front_x->h : front_y->h;
+                while (hidden < limit && !vox_is_air(front_x->c[hidden]) &&
+                       !vox_is_air(front_y->c[hidden])) hidden++;
+            }
+            for (int z = 0; z < col->h;) {
+                while (z < col->h && vox_is_air(col->c[z])) z++;
+                int low = z;
+                while (z < col->h && !vox_is_air(col->c[z])) z++;
+                if (low == z) break;
+                int rise = (z * a->rise) >> 16;
+                int top = back - rise, lip = base - rise;
+                if (top >= FB_H) continue;
+                if (lip <= top) lip = top + 1;
+                uint16_t *at = (uint16_t *)(void *)((uint8_t *)&MARS_FRAMEBUFFER + (FIRST + top * PAGE) * 2) + left;
+                unsigned colour = (unsigned)(col->c[z - 1] + 6) * 0x0101u;
+                int row = top;
+                for (; row < lip && row < FB_H; row++, at += PAGE) {
+                    if (row < 0) continue;
+                    for (int w = 0; w < width; w++) at[w] = (uint16_t)colour;
+                }
+                int bottom_voxel = hidden > low ? hidden : low;
+                int bottom = base - ((bottom_voxel * a->rise) >> 16);
+                int32_t layer = z << 16;
+                for (; row < bottom && row < FB_H; row++, at += PAGE) {
+                    layer -= a->voxels;
+                    if (row < 0) continue;
+                    int sample = layer >> 16;
+                    if (sample < low) sample = low;
+                    colour = (unsigned)(col->c[sample] + 3) * 0x0101u;
+                    for (int w = 0; w < width; w++) at[w] = (uint16_t)colour;
+                }
             }
         }
     }
@@ -699,12 +712,14 @@ static unsigned chance(void) {
 static void shatter(int k) {
     const vcol_t (*model)[CELL] = ent_solid[actors[k].model];
     int total = 0, n = 0, made = 0;
-    for (int x = 0; x < CELL; x++) for (int y = 0; y < CELL; y++) total += model[x][y].h;
+    for (int x = 0; x < CELL; x++)
+        for (int y = 0; y < CELL; y++)
+            for (int z = 0; z < model[x][y].h; z++) total += !vox_is_air(model[x][y].c[z]);
     int skip = total / MAX_PIECES + 1;
     for (int x = 0; x < CELL; x++) {
         for (int y = 0; y < CELL; y++) {
             for (int z = 0; z < model[x][y].h; z++) {
-                if (n++ % skip || made == MAX_PIECES) continue;
+                if (vox_is_air(model[x][y].c[z]) || n++ % skip || made == MAX_PIECES) continue;
                 piece_t *p = &pieces[made++];
                 p->x = (int16_t)((actors[k].x * CELL + x) << 4);
                 p->y = (int16_t)((actors[k].y * CELL + y) << 4);

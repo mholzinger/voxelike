@@ -303,8 +303,8 @@ static const vcol_t (*hero_dressed(unsigned attack))[CELL] {
                 for (int z = 0; z < weapon_col->h; z++) {
                     int px = x, py = y, pz = z;
                     unsigned material = weapon_col->c[z];
+                    if (vox_is_air(material)) continue;
                     if (pose) {
-                        if (material == vox_shadow_material) continue;
                         int shaft = z - 5;
                         int tilt = pose->tilt < 0 ? -pose->tilt : pose->tilt;
                         px += pose->across;
@@ -313,9 +313,9 @@ static const vcol_t (*hero_dressed(unsigned attack))[CELL] {
                         if (px < 0 || px >= CELL || pz < 0 || pz >= COL_MAXH) continue;
                         py = py < 0 ? 0 : py >= CELL ? CELL - 1 : py;
                     }
-                    if (pz < body[px][py].h) continue;
+                    if (pz < body[px][py].h && !vox_is_air(body[px][py].c[pz])) continue;
                     vcol_t *dst = &made[px][py];
-                    while (dst->h <= pz) dst->c[dst->h++] = vox_shadow_material;
+                    while (dst->h <= pz) dst->c[dst->h++] = VOX_AIR_GAP;
                     dst->c[pz] = (uint8_t)material;
                 }
             }
@@ -329,7 +329,7 @@ const vcol_t (*persp_creature_model(const vox_creature_t *c))[CELL] {
 }
 
 static int has_body_voxel(const vcol_t *column, int z) {
-    return z >= 0 && z < column->h && column->c[z] && column->c[z] != VOX_AIR_GAP;
+    return z >= 0 && z < column->h && !vox_is_air(column->c[z]);
 }
 
 static int has_skeleton(int kind) {
@@ -504,10 +504,10 @@ static void place_creatures(int hero_buried, int stair, int offset, int hop) {
                 for (int z = 0; z < gap; z++) {
                     dst->c[dst->h++] = VOX_AIR_GAP;
                 }
-                if (rigid || c.z || cell->ground != DETAIL || cell->creature_index)
-                    mark_creature_column(cell, (unsigned)(m - bump), wx & 7, wy & 7, base, dst->h);
+                mark_creature_column(cell, (unsigned)(m - bump), wx & 7, wy & 7, base, dst->h);
                 for (int z = buried; z < src->h && dst->h < COL_MAXH; z++) {
-                    dst->c[dst->h++] = c.flash ? (uint8_t)(c.flash & ~7) : src->c[z];
+                    unsigned material = src->c[z];
+                    dst->c[dst->h++] = c.flash && !vox_is_air(material) ? (uint8_t)(c.flash & ~7) : material;
                 }
             }
         }
@@ -622,12 +622,12 @@ typedef int walk_fn(walk_t *w);
 /* Paint the creature into a separate strip for this ray. The ground
  * ray can then keep drawing behind its feet. Near terrain has already
  * drawn rows at or below ybuf, so the strip respects wall occlusion. */
-static void draw_creature_column(walk_t *w, const vcol_t *col, int lift, int foot,
+static void draw_creature_run(walk_t *w, const vcol_t *col, int lift, int low, int high,
                        int32_t t_in, int32_t t_out, int x_side, int ybuf, int ys,
                        unsigned light) {
     const int32_t T_NEAR = job.t_near;
     int horizon = job.horizon << ys;
-    int height = col->h + lift;
+    int height = high + lift, foot = low + lift;
     int32_t near = (int32_t)INV(t_in), far = (int32_t)INV(t_out);
     int top = horizon + (int)(((uint32_t)(job.eye_h - height) * far) >> (16 - ys));
     int shoulder = horizon + (int)(((uint32_t)(job.eye_h - height) * near) >> (16 - ys));
@@ -648,7 +648,7 @@ static void draw_creature_column(walk_t *w, const vcol_t *col, int lift, int foo
 
     unsigned shade = vox_front_shade[light];
     if (x_side && shade) shade--;
-    unsigned cap = col->c[col->h - 1] + light;
+    unsigned cap = col->c[high - 1] + light;
     int32_t zstep = (int32_t)RISE(t_in) >> ys;
     int32_t z = (job.eye_h << 16) - (top - horizon) * zstep;
     for (int row = top; row < bottom; row++, z -= zstep) {
@@ -660,8 +660,20 @@ static void draw_creature_column(walk_t *w, const vcol_t *col, int lift, int foo
             if (layer < foot) layer = foot;
             if (layer >= height) layer = height - 1;
             unsigned pixel = col->c[layer - lift];
-            if (pixel != VOX_AIR_GAP) w->creature_pixels[row] = (uint8_t)(pixel + shade);
+            if (!vox_is_air(pixel)) w->creature_pixels[row] = (uint8_t)(pixel + shade);
         }
+    }
+}
+
+static void draw_creature_column(walk_t *w, const vcol_t *col, int lift, int foot,
+                                 int32_t t_in, int32_t t_out, int x_side, int ybuf, int ys,
+                                 unsigned light) {
+    int first = foot - lift;
+    for (int z = col->h; z > first;) {
+        while (z > first && vox_is_air(col->c[z - 1])) z--;
+        int high = z;
+        while (z > first && !vox_is_air(col->c[z - 1])) z--;
+        if (z < high) draw_creature_run(w, col, lift, z, high, t_in, t_out, x_side, ybuf, ys, light);
     }
 }
 
@@ -1163,7 +1175,7 @@ static void draw_actor_pose(const vox_creature_t *actor, const vcol_t model[CELL
                 if (left < 0) left = 0;
                 if (right > job.cols) right = job.cols;
                 for (int z = lo; z < col->h && z < hi; z++) {
-                    if (!col->c[z] || col->c[z] == VOX_AIR_GAP) continue;
+                    if (vox_is_air(col->c[z])) continue;
                     int altitude = ground + pz + z - lo + 1;
                     if (altitude <= ground) continue;
                     int top = (job.horizon << fine_y) +
@@ -1421,6 +1433,10 @@ void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge,
         }
     }
     memset(bump, 0, 2 * sizeof bump[0]);
+    for (int i = 0; i < 2; i++) {
+        cells[CY + i][CX].creature_index = 0;
+        cells[CY + i][CX].ground = DETAIL;
+    }
     int bloody = kind || blow.style <= DEATH_PIERCE || blow.style == DEATH_SLICES;
     unsigned attack = lunge > 0 ? (lunge == 1 ? 12 : lunge == 3 ? 8 : 4) : 0;
     const vcol_t (*idle_model)[CELL] = kind ? ent_solid[kind] : hero_dressed(attack);
@@ -1450,10 +1466,10 @@ void persp_bestiary(uint16_t *fb, int kind, uint16_t yaw, int lunge,
                 if (!src->h) continue;
                 int forward = y + lunge;
                 vcol_t *dst = &bump[forward / CELL].col[x][forward % CELL];
-                if (forward >= CELL) {
-                    dst->c[0] = vox_shadow_material;
-                    dst->h = 1;
-                }
+                int tile = forward / CELL, row = forward % CELL;
+                int base = dst->h;
+                if (!base && forward >= CELL) dst->c[dst->h++] = VOX_AIR_GAP;
+                mark_creature_column(&cells[CY + tile][CX], tile, x, row, base, dst->h);
                 for (int z = 0; z < src->h && dst->h < COL_MAXH; z++)
                     dst->c[dst->h++] = src->c[z];
             }
